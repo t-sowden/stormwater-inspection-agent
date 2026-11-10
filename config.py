@@ -12,11 +12,14 @@ except ImportError:
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 RAIN_CACHE = DATA / "rain_cache"
-
+SITES_FILE = DATA / "sites.csv"
+SITE_STATIONS_FILE = RAIN_CACHE / "site_stations.csv"
+LAST_REFRESH_FILE = RAIN_CACHE / "last_refresh.txt"
 # Local AI
 OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2:3b"
-
+# Time zone used to display times (sites' local time)
+SITE_TZ = "America/Denver"
 # Permit and team rules
 STORM_THRESHOLD_IN = 0.25      # CGP: 0.25 in within 24 hours
 MAX_STATION_MI = 10.0          # team decision Nov 8: max representative distance

@@ -1,0 +1,4 @@
+site_id,station_id,station_name,station_lat,station_lon,distance_mi,station_flags
+S01,KBZN,"Bozeman, Gallatin Field",45.78806,-111.16083,9.6,
+S02,KBZN,"Bozeman, Gallatin Field",45.78806,-111.16083,6.0,
+S03,KBZN,"Bozeman, Gallatin Field",45.78806,-111.16083,13.6,STATION_TOO_FAR

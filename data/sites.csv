@@ -1,1 +1,4 @@
-site_id,name,lat,lon,frequency_option,impaired_water,control_ids,active
+﻿site_id,name,lat,lon,frequency_option,impaired_water,control_ids,active
+S01,SAMPLE Riverside Lot 4,45.6770,-111.0429,B,no,SF-1;IP-2,yes
+S02,SAMPLE North Ridge Subdivision,45.7340,-111.0640,A,yes,SB-1;SF-3,yes
+S03,SAMPLE Gallatin Gateway Shop,45.5930,-111.1980,B,no,SF-2,yes

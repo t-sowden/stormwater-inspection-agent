@@ -1,2 +1,22 @@
 [browser]
 gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#1F5A96"
+backgroundColor = "#F5F8FC"
+secondaryBackgroundColor = "#E3ECF6"
+textColor = "#14273E"
+linkColor = "#1F5A96"
+borderColor = "#B7C9DD"
+dataframeHeaderBackgroundColor = "#D3E1F0"
+font = "sans-serif"
+headingFont = "sans-serif"
+baseRadius = "small"
+showSidebarBorder = true
+
+[theme.sidebar]
+backgroundColor = "#0F2A4A"
+secondaryBackgroundColor = "#1A3C63"
+textColor = "#EAF1F8"
+primaryColor = "#7FB3E6"

@@ -20,20 +20,51 @@ FIELDS = ["hour_end_utc", "rain_in", "status"]
 
 
 # ---------- 1. Download ----------
+AWC_METAR_URL = "https://aviationweather.gov/api/data/metar"
+TIME_GROUP = re.compile(r"\b(\d{2})(\d{2})(\d{2})Z\b")
+
+
+def report_time(group, now):
+    """Turn a report's DDHHMMZ group (e.g. 091956Z) into a full UTC datetime.
+    The report has no month or year, so use the most recent matching day."""
+    day, hour, minute = int(group[0:2]), int(group[2:4]), int(group[4:6])
+    candidate = now
+    for _ in range(3):   # this month, or up to two months back
+        try:
+            ts = candidate.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
+            if ts <= now + timedelta(hours=1):
+                return ts
+        except ValueError:
+            pass       # day doesn't exist in this month (e.g. 31 Nov)
+        candidate = (candidate.replace(day=1) - timedelta(days=1))
+    return None
+
+
+def reports_from_raw_text(text, now):
+    """Raw METAR/SPECI lines -> [{'timestamp', 'rawMessage'}] for clean_hourly."""
+    reports = []
+    for line in text.splitlines():
+        line = line.strip()
+        match = TIME_GROUP.search(line)
+        if not line or not match:
+            continue
+        ts = report_time(match.group(0)[:6], now)
+        if ts:
+            reports.append({"timestamp": ts.isoformat(), "rawMessage": line})
+    return reports
+
+
 def fetch_reports(station_id, hours=168):
-    """All reports for the station over the last `hours` (NWS keeps about 7 days)."""
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(hours=hours)
+    """Hourly (METAR) and extra (SPECI) reports from NOAA's Aviation Weather Center.
+    Same ASOS reports as the NWS API, but complete; plain text, one line per report."""
     resp = requests.get(
-        f"{NWS_BASE}/stations/{station_id}/observations",
+        AWC_METAR_URL,
         headers=NWS_HEADERS,
-        params={"start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "limit": 500},
+        params={"ids": station_id, "hours": hours, "format": "raw"},
         timeout=30,
     )
     resp.raise_for_status()
-    return [f["properties"] for f in resp.json().get("features", [])]
+    return reports_from_raw_text(resp.text, datetime.now(timezone.utc))
 
 
 # ---------- 2. Clean ----------
@@ -43,8 +74,8 @@ def hour_end_of(ts):
 
 
 def is_routine(raw, ts):
-    """Regular hourly report: not a SPECI and sent in the last 15 minutes of the hour."""
-    return not raw.startswith("SPECI") and ts.minute >= 45
+    """Regular hourly report: the line starts with METAR (extra reports start with SPECI)."""
+    return raw.startswith("METAR")
 
 
 def rain_from_report(raw):
@@ -73,6 +104,8 @@ def clean_hourly(reports, start, end):
     while hour <= end:
         if hour in routine:
             inches, status = rain_from_report(routine[hour])
+        elif hour > end - timedelta(hours=2):
+            inches, status = None, "pending"   # report not published yet
         else:
             inches, status = None, "missing"
         rows.append({"hour_end_utc": hour, "rain_in": inches, "status": status})
@@ -92,7 +125,7 @@ def storm_trigger(rows, threshold=STORM_THRESHOLD_IN):
             trigger = row["hour_end_utc"]
     if any(r["status"] == "missing" for r in rows):
         flags.add("MISSING_DATA")
-    reported = [r["hour_end_utc"] for r in rows if r["status"] != "missing"]
+    reported = [r["hour_end_utc"] for r in rows if r["status"] in ("ok", "dry")]
     if not reported or datetime.now(timezone.utc) - max(reported) > timedelta(hours=DATA_LATE_HOURS + 1):
         flags.add("DATA_LATE")
     return trigger, max_24h, sorted(flags)

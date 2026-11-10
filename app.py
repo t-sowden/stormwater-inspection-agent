@@ -183,7 +183,11 @@ with triage:
     else:
         table = build_triage(sites, site_stations)
         st.dataframe(table.style.map(color_priority, subset=["Priority"]),
-                     hide_index=True, width="stretch")
+                     hide_index=True, width="stretch",
+                     column_config={
+                         "Distance (mi)": st.column_config.NumberColumn(format="%.1f"),
+                         "Max 24-h rain (in)": st.column_config.NumberColumn(format="%.2f"),
+                     })
         st.caption("24-h window ends = time 0.25 in was reached + 24 h (CGP 4.2.2a). "
                    "Working-hour, weekend, and routine 7/14-day due dates are added "
                    "when scheduler.py is built.")

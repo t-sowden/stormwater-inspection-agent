@@ -1,0 +1,4 @@
+site_id,station_id,station_name,station_lat,station_lon,distance_mi,station_flags
+T01,KTIW,"Tacoma, Tacoma Narrows Airport",47.2675,-122.57611,7.7,
+T02,KTCM,Tacoma / McChord Air Force Base,47.15,-122.48333,4.4,
+T03,KTIW,"Tacoma, Tacoma Narrows Airport",47.2675,-122.57611,3.7,

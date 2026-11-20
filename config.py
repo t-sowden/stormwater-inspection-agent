@@ -32,3 +32,9 @@ NWS_HEADERS = {
     "User-Agent": f"(stormwater-agent, {NWS_CONTACT})",
     "Accept": "application/geo+json",
 }
+
+# Site working calendar defaults (Process Outline R1, R6, R7). Each site can override in sites.csv.
+DEFAULT_WORK_DAYS = "Mon-Fri"
+DEFAULT_WORK_START = "07:00"
+DEFAULT_WORK_END = "17:00"
+INTERPRETATION_CUTOFF_HOURS = 3   # R7: 3 or fewer working hours left in the 24-h window

@@ -5,6 +5,7 @@ Rules (Process Outline, R8):
 - Rain amount comes from the report's P group (P0004 = 0.04 in; P0000 = trace = 0.00).
 - Regular report with no P group = dry hour = 0.00 in.
 - 'PNO' in the report (gauge out of service) or no regular report = MISSING.
+- MISSING_DATA flag only when a missing hour is near rain or in the last 24 h (Option B).
 """
 import csv
 import re
@@ -13,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from config import DATA_LATE_HOURS, NWS_BASE, NWS_HEADERS, RAIN_CACHE, STORM_THRESHOLD_IN
+from config import DATA_LATE_HOURS, NWS_HEADERS, RAIN_CACHE, STORM_THRESHOLD_IN
 
 P_GROUP = re.compile(r"\sP(\d{4})(?=\s|$)")
 FIELDS = ["hour_end_utc", "rain_in", "status"]
@@ -114,6 +115,23 @@ def clean_hourly(reports, start, end):
 
 
 # ---------- 3. Storm trigger ----------
+def missing_matters(rows, now=None):
+    """Option B (Alex, Nov 10): a missing hour counts only if it could hide a storm:
+    it falls within 24 h of an hour with reported precipitation (including a trace),
+    or it is within the last 24 h. Dry-weather gaps are ignored."""
+    now = now or datetime.now(timezone.utc)
+    rain_hours = [r["hour_end_utc"] for r in rows if r["status"] == "ok"]
+    for r in rows:
+        if r["status"] != "missing":
+            continue
+        t = r["hour_end_utc"]
+        if now - t <= timedelta(hours=24):
+            return True
+        if any(abs(t - h) < timedelta(hours=24) for h in rain_hours):
+            return True
+    return False
+
+
 def storm_trigger(rows, threshold=STORM_THRESHOLD_IN):
     """Return (T, max_24h_in, flags). T = first hour the rolling 24-h total reaches threshold."""
     trigger, max_24h, flags = None, 0.0, set()
@@ -123,7 +141,7 @@ def storm_trigger(rows, threshold=STORM_THRESHOLD_IN):
         max_24h = max(max_24h, total)
         if trigger is None and total >= threshold:
             trigger = row["hour_end_utc"]
-    if any(r["status"] == "missing" for r in rows):
+    if missing_matters(rows):
         flags.add("MISSING_DATA")
     reported = [r["hour_end_utc"] for r in rows if r["status"] in ("ok", "dry")]
     if not reported or datetime.now(timezone.utc) - max(reported) > timedelta(hours=DATA_LATE_HOURS + 1):

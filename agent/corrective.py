@@ -6,20 +6,24 @@ Categories (assigned by the inspector, never by the agent):
   corrective_no_new_control  R12: close of the next business day
   corrective_new_control     R12: within 7 calendar days of discovery (new/replacement control or
                                   significant repair); R13: update the SWPPP within 7 days of completion
-R11: the 3rd or later routine fix of the same control becomes a corrective action.
+R11: the 3rd or later routine fix of the same control becomes a corrective action. The agent uses
+     the earlier corrective deadline (close of next business day) and flags REPEAT_FIX_CORRECTIVE so
+     the inspector picks the final category (a new control would allow 7 days).
 R14: record the condition within 24 h of finding it; record the actions within 24 h of completing them.
 A description mentioning a possible discharge or water-quality issue is flagged ESCALATE.
 """
 from datetime import datetime, timedelta, timezone
 
-from agent.scheduler import LOCAL, calendar_for
+from agent.scheduler import LOCAL, calendar_for, plus_hours
 
 CATEGORIES = {
     "routine_maintenance": "Routine maintenance",
     "corrective_no_new_control": "Corrective action (no new control)",
     "corrective_new_control": "Corrective action (new control or significant repair)",
 }
-ESCALATE_WORDS = ("discharge", "sheen", "turbid", "plume", "leaving the site", "offsite", "off-site")
+ESCALATE_WORDS = ("discharge", "sheen", "turbid", "plume", "leaving the site", "offsite", "off-site",
+                  "muddy water", "sediment in the street", "sediment on the street", "tracked onto",
+                  "into the inlet", "street inlet", "storm drain", "into the creek", "into the stream")
 
 
 def parse_local(text):
@@ -46,7 +50,7 @@ def deficiency_deadlines(defect, site, history=(), now=None):
                    and parse_local(h["found_at"]) < found]
         if len(repeats) >= 2:
             flags.append("REPEAT_FIX_CORRECTIVE")
-            category = "corrective_new_control"
+            category = "corrective_no_new_control"   # never later than the routine deadline
 
     if category == "routine_maintenance":
         deadlines.append(("Finish maintenance", cal.next_business_day_end(found.date()), "R10"))
@@ -60,9 +64,9 @@ def deficiency_deadlines(defect, site, history=(), now=None):
     else:
         flags.append("UNKNOWN_CATEGORY")
 
-    deadlines.append(("Record condition in log", found + timedelta(hours=24), "R14"))
+    deadlines.append(("Record condition in log", plus_hours(found, 24), "R14"))
     if closed:
-        deadlines.append(("Record actions in log", closed + timedelta(hours=24), "R14"))
+        deadlines.append(("Record actions in log", plus_hours(closed, 24), "R14"))
 
     if any(w in defect.get("description", "").lower() for w in ESCALATE_WORDS):
         flags.append("ESCALATE")

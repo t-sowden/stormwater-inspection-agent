@@ -7,13 +7,14 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from agent import corrective, drafter, records, swppp, validator
+from agent import corrective, drafter, records, report_rules, swppp, validator
 from agent import verify as verifier
 from agent.rainfall import load_cache, rain_for_station, storm_trigger
-from agent.scheduler import site_schedule
+from agent.scheduler import site_schedule, storm_triggers
 from agent.stations import nearest_station
 from config import (LAST_REFRESH_FILE, MAX_STATION_MI, OLLAMA_HOST, OLLAMA_MODEL,
                     SITE_STATIONS_FILE, SITE_TZ, SITES_FILE, STORM_THRESHOLD_IN)
+from agent.scheduler import LOCAL as SCHED_LOCAL
 
 LOCAL = ZoneInfo(SITE_TZ)
 st.set_page_config(page_title="Stormwater Inspection Agent", layout="wide")
@@ -112,8 +113,18 @@ def refresh_rainfall(sites):
 PRIORITY_ORDER = {"OVERDUE": 0, "STORM INSPECTION": 1, "CHECK DATA": 2, "Routine": 3}
 
 
-def build_triage(sites, site_stations):
-    now = datetime.now(timezone.utc)
+def scheduler_trigger(site_d, hourly):
+    """First 0.25-in trigger since the last inspection, from the same scheduler function that sets
+    the due dates (so the table and the due dates can never disagree)."""
+    last = str(site_d.get("last_inspection", "")).strip()
+    if not last:
+        return None
+    triggers = storm_triggers(hourly, datetime.fromisoformat(last).replace(tzinfo=SCHED_LOCAL))
+    return triggers[0][0] if triggers else None
+
+
+def build_triage(sites, site_stations, now=None):
+    now = now or datetime.now(timezone.utc)
     rows, problems = [], []
     for _, site in sites.iterrows():
         sid = site["site_id"]
@@ -124,11 +135,12 @@ def build_triage(sites, site_stations):
         st_row = site_stations.loc[sid]
         hourly = [r for r in load_cache(st_row["station_id"])
                   if r["hour_end_utc"] > now - timedelta(days=7)]
-        trigger, max_24h, data_flags = storm_trigger(hourly)
+        _, max_24h, data_flags = storm_trigger(hourly, now=now)
         if isinstance(st_row["station_flags"], str) and st_row["station_flags"]:
             data_flags = data_flags + st_row["station_flags"].split(";")
         site_d = site.to_dict()
         site_d["last_inspection"] = records.last_inspection(sid, site_d.get("last_inspection", ""))
+        trigger = scheduler_trigger(site_d, hourly)
         fixes = corrective.open_items(site_d, records.deficiencies(sid), now)
         try:
             items = site_schedule(site_d, hourly, now)
@@ -165,7 +177,7 @@ def build_triage(sites, site_stations):
             "Station": st_row["station_id"],
             "Distance (mi)": st_row["distance_mi"],
             "Max 24-h rain (in)": round(max_24h, 2),
-            "0.25 in reached": local_time(trigger),
+            "0.25 in reached (since last insp.)": local_time(trigger),
             "Also due": "; ".join(also),
             "Open fixes": len(fixes),
             "Flags": ", ".join(flags),
@@ -211,7 +223,8 @@ def site_context(site, site_stations, now=None):
     if not site_stations.empty and sid in site_stations.index and site_stations.loc[sid, "station_id"]:
         st_row = site_stations.loc[sid]
         hourly = [r for r in load_cache(st_row["station_id"]) if r["hour_end_utc"] > now - timedelta(days=7)]
-        trig, max_24h, flags = storm_trigger(hourly)
+        _, max_24h, flags = storm_trigger(hourly, now=now)
+        trig = scheduler_trigger(site_d, hourly)
         if isinstance(st_row["station_flags"], str) and st_row["station_flags"]:
             flags = flags + st_row["station_flags"].split(";")
         rain = {"station": st_row["station_id"], "distance_mi": st_row["distance_mi"],
@@ -257,15 +270,12 @@ def build_facts(ctx, form, now=None):
                          "deadlines": [("Notify compliance manager", "Immediately", "R12")]})
     gauge = form["gauge"] if form["gauge_read"] else None
     station_triggered = any(i["kind"].startswith("Storm") for i in ctx["items"])
-    if gauge is not None and gauge >= STORM_THRESHOLD_IN and not station_triggered:
-        flags.add("POSSIBLE_MISSED_INSPECTION")
-    if gauge is None and 0.15 <= ctx["rain"]["max_24h_in"] < STORM_THRESHOLD_IN:
-        flags.add("CHECK_GAUGE")
+    flags.update(report_rules.gauge_flags(site, ctx["rain"]["max_24h_in"], gauge, station_triggered))
     flags.update(f"SWPPP_CONFLICT: {w}" for w in swppp.threshold_conflicts(sid))
     return {
         "site_id": sid, "site_name": site["name"], "inspector": form["inspector"].strip(),
         "inspection_type": form["type"], "inspection_time": long_time(insp_time),
-        "report_due": long_time(insp_time + timedelta(hours=24)),
+        "report_due": long_time(report_rules.report_due(insp_time)),
         "weather_notes": form["weather"].strip(), "rainfall": ctx["rain"], "gauge_reading": gauge,
         "findings": findings, "flags": sorted(flags),
         "open_items": [{**fx, "deadlines": [(l, long_time(w), r) for l, w, r in fx["deadlines"]]}
@@ -304,6 +314,13 @@ with st.sidebar:
         st.success(f"Ollama connected: {OLLAMA_MODEL}")
     refreshed = last_refresh()
     st.caption(f"**Rainfall last refreshed:** {local_time(refreshed) if refreshed else 'Never'}")
+    replay = st.checkbox("Replay: judge everything as of the last refresh", value=False,
+                         disabled=refreshed is None,
+                         help="For offline demos with saved data. DATA_LATE, OVERDUE and due dates are "
+                              "computed as if it were the moment of the last refresh, not now.")
+    AS_OF = refreshed if (replay and refreshed) else None
+    if AS_OF:
+        st.info(f"Replay mode: times judged as of {local_time(AS_OF)}.")
     st.caption(f"Active sites: {len(sites)}  |  Max station distance: {MAX_STATION_MI} mi  |  "
                f"Storm threshold: {STORM_THRESHOLD_IN} in / 24 h  |  Times: {SITE_TZ}")
 
@@ -349,7 +366,7 @@ with triage:
     if site_stations.empty:
         st.info("No rainfall data yet. Click **Refresh rainfall**.")
     else:
-        table, problems = build_triage(sites, site_stations)
+        table, problems = build_triage(sites, site_stations, AS_OF)
         for msg in problems:
             st.error(msg)
         st.dataframe(table.style.map(color_priority, subset=["Priority"]),
@@ -377,7 +394,7 @@ stations_saved = load_site_stations()
 
 with checklist:
     sid = st.selectbox("Site", site_ids, format_func=site_label.get, key="ck_site")
-    ctx = site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved)
+    ctx = site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved, AS_OF)
     for w in swppp.threshold_conflicts(sid):
         st.warning(w)
     if not swppp.load_sections(sid):
@@ -403,7 +420,7 @@ with checklist:
 
 with report:
     sid = st.selectbox("Site", site_ids, format_func=site_label.get, key="rp_site")
-    ctx = site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved)
+    ctx = site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved, AS_OF)
     sections = swppp.sections_for(sid, ctx["controls"])
     with st.form(f"findings_{sid}"):
         st.subheader("Inspection findings (entered by the inspector)")
@@ -431,7 +448,7 @@ with report:
         form = {"inspector": inspector, "type": itype, "date": idate, "time": itime, "weather": weather,
                 "gauge_read": gauge_read, "gauge": gauge, "conditions": conds, "notes": notes,
                 "discharge": discharge, "discharge_note": discharge_note}
-        facts = build_facts(ctx, form)
+        facts = build_facts(ctx, form, AS_OF)
         with st.spinner("Drafting with the local AI..."):
             text, source, problems = write_narrative(facts)
         st.session_state["draft"] = {"site": sid, "facts": facts, "narrative": text, "source": source,

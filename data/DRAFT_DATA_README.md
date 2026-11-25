@@ -5,7 +5,7 @@ final version **using the same file name and the same columns/headings**; no cod
 
 | File | What it is | Rules to keep |
 | --- | --- | --- |
-| `data/sites.csv` | Site register | Columns: site_id, name, lat, lon, frequency_option (A/B), impaired_water (yes/no), control_ids (`;`-separated), active (yes/no), last_inspection (fallback), work_days (e.g. Mon-Fri), work_start, work_end (HH:MM), works_holidays (yes/no) |
+| `data/sites.csv` | Site register | Columns: site_id, name, lat, lon, frequency_option (A/B), impaired_water (yes/no), control_ids (`;`-separated), active (yes/no), last_inspection (fallback), work_days (e.g. Mon-Fri), work_start, work_end (HH:MM), works_holidays (yes/no), has_manual_gauge (yes/no; CHECK_GAUGE only fires for "yes") |
 | `data/swppps/<site_id>.md` | One SWPPP per site | Control headings must be `## <number> <name> <CONTROL-ID>`, e.g. `## 4.1 Silt Fence SF-1`. Bullets starting `Inspect:` and `Maintenance trigger:` become checklist items. Control IDs must match `control_ids` in sites.csv |
 | `data/inspections.csv` | Contractor inspection log (read-only to the app) | Columns: inspection_id, site_id, inspected_at (YYYY-MM-DD HH:MM, site-local), type (routine/storm), inspector |
 | `data/deficiencies.csv` | Deficiencies found (read-only to the app) | Columns: deficiency_id, site_id, inspection_id, control_id, found_at, description, category, status (open/closed), closed_at. category = routine_maintenance, corrective_no_new_control, or corrective_new_control |

@@ -50,7 +50,7 @@ The agent never marks inspections complete, signs reports, or edits inspection r
 uv run --with pytest python -m pytest -q tests
 ```
 
-All tests should pass.
+All tests should pass. The 32 cases are listed in `tests/TEST_CASES.md`.
 
 ## 6. Data files
 
@@ -58,7 +58,26 @@ Site data, SWPPPs, the inspection log, and test cases live in `data/` and `tests
 Files marked **DRAFT** or **SAMPLE** are placeholders. See `data/DRAFT_DATA_README.md` to replace them.
 Settings (station distance, storm threshold, time zone, working hours) are in `config.py`.
 
-## 7. Troubleshooting
+## 7. Offline demo (saved data)
+
+Rainfall is cached in `data/rain_cache/`. Without a refresh, old data is flagged `DATA_LATE`.
+To demo with saved data, tick **Replay: judge everything as of the last refresh** in the sidebar.
+DATA_LATE, OVERDUE, and due dates are then computed as of the last refresh time.
+
+## 8. Known limitations (v1)
+
+| Limitation | Effect |
+| --- | --- |
+| A remotely readable site rain gauge does not override NOAA (R8) | The agent always uses the nearest ASOS station. Enter a manual gauge reading on the Draft Report tab; a reading of 0.25 in or more with no station trigger is flagged `POSSIBLE_MISSED_INSPECTION` |
+| No check for a station without a working rain sensor | A station that never sends a precipitation group looks "dry" every hour. Compare with a nearby station if a site's rain looks too low |
+| R7 manager setting is not stored | When `INTERPRETATION_REQUIRED` shows, both deadlines are listed; the manager picks one |
+| R12 "infeasible" is not a field in the log | Only R10 (routine) shows the 7-day infeasible deadline |
+| R11 counts repeats by control ID only | The log has no location column, so "same location" and "same fix" are not checked |
+| Validator blocks any word starting with "certif" | Product names such as "certified weed-free straw" are rejected. Kept on purpose: safer |
+| Validator uses word patterns | New phrasings can slip through; failures go to `data/failure_register.csv` |
+| Contractor inspection form | The agent reads `data/inspections.csv` and `data/deficiencies.csv` only; it never writes them |
+
+## 9. Troubleshooting
 
 | Message | Fix |
 | --- | --- |

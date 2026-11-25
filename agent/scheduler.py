@@ -138,9 +138,15 @@ def routine_due(last_inspection, days, cal):
     return cal.bounds(cal.last_workday_on_or_before(target))[1]
 
 
+def plus_hours(when, hours):
+    """Add real elapsed hours (continuous time). Adding a timedelta to a local time in Python
+    adds clock hours, which is off by one hour across a daylight-saving change."""
+    return (when.astimezone(timezone.utc) + timedelta(hours=hours)).astimezone(LOCAL)
+
+
 def storm_deadline(trigger, cal):
     """R4/R6/R7 for one trigger time. Returns (due, alternate_due, rule, flags)."""
-    window_end = trigger + timedelta(hours=24)
+    window_end = plus_hours(trigger, 24)
     hours = cal.working_hours(trigger, window_end)
     if hours == 0:
         return cal.next_business_day_end(trigger.date()), None, "R6", []
@@ -151,44 +157,68 @@ def storm_deadline(trigger, cal):
 
 
 def storm_triggers(hourly, after, threshold=STORM_THRESHOLD_IN):
-    """R4/R5: trigger times (local) after the last inspection; at most 2 per storm event.
+    """R4/R5: inspection trigger times (local) after the last inspection; at most 2 per storm.
 
     hourly: rows with 'hour_end_utc' (UTC datetime) and 'rain_in' (None = missing).
-    Event = consecutive hours whose rolling 24-h total is >= threshold.
-    Inside an event, a local calendar day 'qualifies' when its own rain total >= threshold.
-    Inspections: first trigger, plus the time the last qualifying day reached the threshold.
+    An inspection resets the rainfall count: only rain after `after` (the last inspection) counts.
+    R4: a storm starts at the hour the rolling 24-h total first reaches the threshold.
+    R5 (CGP Part 4.2.2, fn 69): if each following calendar day also produces >= threshold on its
+    own, it is the same storm. Inspect after the first day and after the LAST such day only.
+    Fn 69 example: 0.30 / 0.25 / 0.10 in -> inspect after Day 1 and Day 2, not Day 3.
+    Two inspections maximum (Alex, Nov 24): if the day before had >= threshold before the last
+    inspection and the storm keeps producing >= threshold per day, that inspection was the
+    first-day one, so only the last-day inspection is still required.
     """
     rows = [r for r in hourly if r["hour_end_utc"] > after]
-    triggers, event = [], None
+    reached_all = _days_reaching(hourly, threshold)   # includes rain before the inspection
+
+    # Hours where the rolling 24-h total first climbs to the threshold (R4 start times).
+    starts, above = [], False
     for i, r in enumerate(rows):
-        window = rows[max(0, i - 23): i + 1]
-        total = round(sum(x["rain_in"] or 0 for x in window), 2)
-        if total >= threshold:
-            if event is None:
-                event = {"start": r["hour_end_utc"], "rows": []}
-            event["rows"].append(r)
-        elif event is not None:
-            triggers += _event_triggers(event, threshold)
-            event = None
-    if event is not None:
-        triggers += _event_triggers(event, threshold)
+        total = round(sum(x["rain_in"] or 0 for x in rows[max(0, i - 23): i + 1]), 2)
+        if total >= threshold and not above:
+            starts.append(r["hour_end_utc"].astimezone(LOCAL))
+        above = total >= threshold
+
+    day_reached = _days_reaching(rows, threshold)     # rain after the inspection only
+
+    triggers, storm_last_day = [], None
+    for first in starts:
+        if storm_last_day is not None and first.date() <= storm_last_day:
+            continue                      # still inside a multi-day storm already counted
+        one_day = timedelta(days=1)
+        prev = first.date() - one_day
+        if first.date() in reached_all and prev in reached_all and reached_all[prev] <= after:
+            # The storm continues past the last inspection, which counted as the first-day one.
+            last = prev
+            while last + one_day in reached_all:
+                last += one_day
+            if reached_all[last] > after:
+                triggers.append((reached_all[last], "last day (R5)"))
+            storm_last_day = last
+            continue
+        triggers.append((first, "first day"))
+        last = first.date()
+        while last + one_day in day_reached:
+            last += one_day               # the storm continues with another >= threshold day
+        if last > first.date():
+            triggers.append((day_reached[last], "last day (R5)"))
+        storm_last_day = last
     return triggers
 
 
-def _event_triggers(event, threshold):
-    first = event["start"].astimezone(LOCAL)
-    day_totals, day_reached = {}, {}
-    for r in event["rows"]:
+def _days_reaching(rows, threshold):
+    """Site-local calendar days whose own rain total reaches the threshold -> time it did."""
+    day_total, day_reached = {}, {}
+    for r in rows:
         local = r["hour_end_utc"].astimezone(LOCAL)
         d = local.date()
-        day_totals[d] = round(day_totals.get(d, 0) + (r["rain_in"] or 0), 2)
-        if day_totals[d] >= threshold and d not in day_reached:
+        day_total[d] = round(day_total.get(d, 0) + (r["rain_in"] or 0), 2)
+        if day_total[d] >= threshold and d not in day_reached:
             day_reached[d] = local
-    qualifying = sorted(day_reached)
-    out = [(first, "first day")]
-    if len(qualifying) >= 2 and qualifying[-1] > first.date():
-        out.append((day_reached[qualifying[-1]], "last day (R5)"))
-    return out
+    return day_reached
+
+
 
 
 def site_schedule(site, hourly, now=None, data_flags=()):

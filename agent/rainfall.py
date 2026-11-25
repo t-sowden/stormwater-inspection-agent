@@ -4,7 +4,8 @@ Rules (Process Outline, R8):
 - Use only the regular hourly report for each hour (skip mid-hour SPECI reports).
 - Rain amount comes from the report's P group (P0004 = 0.04 in; P0000 = trace = 0.00).
 - Regular report with no P group = dry hour = 0.00 in.
-- 'PNO' in the report (gauge out of service) or no regular report = MISSING.
+- 'PNO' in the report (gauge out of service), 'P////' (amount not measured), or no regular
+  report = MISSING. Never counted as 0.
 - MISSING_DATA flag only when a missing hour is near rain or in the last 24 h (Option B).
 """
 import csv
@@ -17,6 +18,8 @@ import requests
 from config import DATA_LATE_HOURS, NWS_HEADERS, RAIN_CACHE, STORM_THRESHOLD_IN
 
 P_GROUP = re.compile(r"\sP(\d{4})(?=\s|$)")
+P_UNKNOWN = re.compile(r"\sP/{4}(?=\s|$)")     # P//// = precipitation amount not measured
+P_GARBLED = re.compile(r"\sP(?!\d{4}(?:\s|$))(?=\S{0,3}\d)\S{4}(?=\s|$)")   # e.g. P00A4: unreadable amount
 FIELDS = ["hour_end_utc", "rain_in", "status"]
 
 
@@ -81,8 +84,8 @@ def is_routine(raw, ts):
 
 def rain_from_report(raw):
     """Return (inches or None, status) from one regular report's text."""
-    if " PNO" in raw:
-        return None, "missing"          # gauge out of service
+    if " PNO" in raw or P_UNKNOWN.search(raw) or P_GARBLED.search(raw):
+        return None, "missing"          # gauge out of service / amount not measured / unreadable
     match = P_GROUP.search(raw)
     if match:
         return int(match.group(1)) / 100, "ok"   # P0000 = trace = 0.00
@@ -132,8 +135,11 @@ def missing_matters(rows, now=None):
     return False
 
 
-def storm_trigger(rows, threshold=STORM_THRESHOLD_IN):
-    """Return (T, max_24h_in, flags). T = first hour the rolling 24-h total reaches threshold."""
+def storm_trigger(rows, threshold=STORM_THRESHOLD_IN, now=None):
+    """Return (T, max_24h_in, flags). T = first hour the rolling 24-h total reaches threshold.
+    now: the time to judge DATA_LATE and MISSING_DATA against (default: the real current time;
+    the demo passes the last refresh time so cached data is not flagged late)."""
+    now = now or datetime.now(timezone.utc)
     trigger, max_24h, flags = None, 0.0, set()
     for i, row in enumerate(rows):
         window = rows[max(0, i - 23): i + 1]
@@ -141,10 +147,10 @@ def storm_trigger(rows, threshold=STORM_THRESHOLD_IN):
         max_24h = max(max_24h, total)
         if trigger is None and total >= threshold:
             trigger = row["hour_end_utc"]
-    if missing_matters(rows):
+    if missing_matters(rows, now):
         flags.add("MISSING_DATA")
     reported = [r["hour_end_utc"] for r in rows if r["status"] in ("ok", "dry")]
-    if not reported or datetime.now(timezone.utc) - max(reported) > timedelta(hours=DATA_LATE_HOURS + 1):
+    if not reported or now - max(reported) > timedelta(hours=DATA_LATE_HOURS + 1):
         flags.add("DATA_LATE")
     return trigger, max_24h, sorted(flags)
 

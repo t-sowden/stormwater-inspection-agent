@@ -50,5 +50,9 @@ def nearest_station(lat, lon):
     if not stations:
         return None, ["NO_STATION"]
     best = stations[0]
-    flags = ["STATION_TOO_FAR"] if best["distance_mi"] > MAX_STATION_MI else []
-    return best, flags
+    return best, distance_flags(best["distance_mi"])
+
+
+def distance_flags(distance_mi):
+    """R8: a station more than MAX_STATION_MI away (distance rounded to 0.1 mi) is not representative."""
+    return ["STATION_TOO_FAR"] if round(distance_mi, 1) > MAX_STATION_MI else []

@@ -11,5 +11,13 @@ final version **using the same file name and the same columns/headings**; no cod
 | `data/deficiencies.csv` | Deficiencies found (read-only to the app) | Columns: deficiency_id, site_id, inspection_id, control_id, found_at, description, category, status (open/closed), closed_at. category = routine_maintenance, corrective_no_new_control, or corrective_new_control |
 | `tests/cases.json` | Test suite for the Verification tab | Each case: id, label (typical/hard/adversarial), type, rule, description, inputs, expected. Copy an existing case of the same type and edit it. Write expected answers from the permit before running |
 
+## Add / Edit Site tab
+
+The **Add / Edit Site** tab is the other way to change `data/sites.csv` and `data/swppps/<site_id>.md`.
+It keeps the column order and any extra columns, builds `control_ids` from the control table, and writes the
+SWPPP in the `T01.md` heading format (or saves an uploaded `.md` as is). Before each save, the old files are
+copied to `data/backups/<name>_<YYYYMMDD_HHMMSS>.<ext>` (not tracked by Git). To undo a save, copy the backup
+back over the file. The tab never touches the inspection log, the deficiency list, or the test cases.
+
 After swapping: run `uv run --with pytest python -m pytest -q tests`, or click **Run test suite** on the
 Verification tab, and record failures in `data/failure_register.csv`.

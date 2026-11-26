@@ -1,0 +1,159 @@
+"""Add / Edit Site tab logic (agent/site_admin.py). Uses temp copies only; real data/ files are never written."""
+import shutil
+from datetime import datetime
+
+import pytest
+
+from agent import site_admin, swppp
+from config import DATA
+
+NOW = datetime(2026, 11, 25, 9, 30, 0)
+
+
+@pytest.fixture
+def files(tmp_path, monkeypatch):
+    """Temp copies of sites.csv and the SWPPP folder; swppp.py reads the temp folder too."""
+    sites = tmp_path / "sites.csv"
+    shutil.copy(DATA / "sites.csv", sites)
+    swppps = tmp_path / "swppps"
+    shutil.copytree(DATA / "swppps", swppps)
+    monkeypatch.setattr(swppp, "SWPPP_DIR", swppps)
+    return {"sites_file": sites, "swppp_dir": swppps, "backup_dir": tmp_path / "backups"}
+
+
+def new_site(**kw):
+    s = site_admin.new_site_defaults()
+    s.update({"site_id": "T04", "name": "SAMPLE Test Yard", "lat": "47.2500", "lon": "-122.4500"})
+    s.update(kw)
+    return s
+
+
+CONTROLS = [
+    {"control_id": "SF-9", "name": "Silt Fence", "location": "west line",
+     "inspect": "undercutting, tears, sediment depth", "maintenance_trigger": "remove sediment at 1/3 height",
+     "response": "routine maintenance"},
+    {"control_id": "IP-9", "name": "Inlet Protection", "location": "Inlet 1",
+     "inspect": "clogged bag", "maintenance_trigger": "", "response": ""},
+]
+
+
+def test_validation_errors(files):
+    bad = new_site(site_id="T 4!", name="", lat="95", lon="-200", frequency_option="C",
+                   impaired_water="maybe", work_days="Mon-Funday", work_start="7am", work_end="17:00")
+    controls = [{"control_id": "sf-1", "name": "", "inspect": ""},
+                {"control_id": "SF-2", "name": "A", "inspect": "x"},
+                {"control_id": "SF-2", "name": "B", "inspect": "y"}]
+    errors = " | ".join(site_admin.validate(bad, controls, True, files["sites_file"]))
+    for text in ["letters, digits, and hyphens", "name is required", "Latitude must be between",
+                 "Longitude must be between", "Frequency option", "Impaired water must be yes or no",
+                 "Work days", "Work start '7am'", "used more than once", "list at least one inspect item"]:
+        assert text in errors, text
+    # clean_controls upper-cases sf-1, so the format error shows for a truly bad ID
+    assert "must be 2-3 capital letters" in " ".join(
+        site_admin.validate(new_site(), [{"control_id": "SILT-1", "name": "x", "inspect": "y"}], True,
+                            files["sites_file"]))
+
+
+def test_validation_duplicate_times_and_no_controls(files):
+    errors = " | ".join(site_admin.validate(new_site(site_id="T01", work_start="17:00", work_end="07:00"),
+                                            [], True, files["sites_file"]))
+    assert "already exists" in errors
+    assert "must be earlier than work end" in errors
+    assert "at least one control" in errors
+    assert site_admin.validate(new_site(), CONTROLS, True, files["sites_file"]) == []
+
+
+def test_errors_save_nothing(files):
+    before = files["sites_file"].read_bytes()
+    errors, backups = site_admin.save_site(new_site(name=""), CONTROLS, "x", True, now=NOW, **files)
+    assert errors and not backups
+    assert files["sites_file"].read_bytes() == before
+    assert not (files["swppp_dir"] / "T04.md").exists()
+    assert not files["backup_dir"].exists()
+
+
+def test_new_site_appended_swppp_written_backup_created(files):
+    text = site_admin.build_swppp(new_site(), CONTROLS, {"contacts": "- Pat Lee (DRAFT)"})
+    errors, backups = site_admin.save_site(new_site(), CONTROLS, text, True, now=NOW, **files)
+    assert errors == []
+    columns, rows = site_admin.read_sites(files["sites_file"])
+    assert columns == site_admin.SITE_COLUMNS
+    assert [r["site_id"] for r in rows] == ["T01", "T02", "T03", "T04"]
+    assert rows[-1]["control_ids"] == "SF-9;IP-9"
+    assert rows[-1]["work_days"] == "Mon-Fri" and rows[-1]["frequency_option"] == "B"
+    assert files["sites_file"].read_bytes().startswith(b"\xef\xbb\xbf")     # utf-8-sig
+    assert (files["swppp_dir"] / "T04.md").read_text(encoding="utf-8").startswith(
+        "# SWPPP: SAMPLE Test Yard (T04)")
+    assert [p.name for p in backups] == ["sites_20261125_093000.csv"]     # no old T04.md to back up
+    assert (files["backup_dir"] / "sites_20261125_093000.csv").exists()
+
+
+def test_edit_replaces_row_and_keeps_unknown_columns(files):
+    # add an unknown column to the temp copy
+    lines = files["sites_file"].read_text(encoding="utf-8-sig").splitlines()
+    lines = [lines[0] + ",owner"] + [ln + ",ACME" for ln in lines[1:]]
+    files["sites_file"].write_text("\n".join(lines) + "\n", encoding="utf-8")
+    columns, rows = site_admin.read_sites(files["sites_file"])
+    t02 = dict(next(r for r in rows if r["site_id"] == "T02"))
+    t02.update(name="SAMPLE Renamed Apartments", frequency_option="A")
+    controls = site_admin.controls_from_sections(swppp.load_sections("T02"))
+    text = site_admin.build_swppp(t02, controls)
+    errors, backups = site_admin.save_site(t02, controls, text, False, now=NOW, **files)
+    assert errors == []
+    columns2, rows2 = site_admin.read_sites(files["sites_file"])
+    assert columns2 == columns and columns2[-1] == "owner"
+    assert [r["site_id"] for r in rows2] == ["T01", "T02", "T03"]
+    assert rows2[1]["name"] == "SAMPLE Renamed Apartments" and rows2[1]["owner"] == "ACME"
+    assert rows2[1]["control_ids"] == "SF-2;IP-1"
+    assert rows2[0] == rows[0] and rows2[2] == rows[2]
+    assert {p.name for p in backups} == {"sites_20261125_093000.csv", "T02_20261125_093000.md"}
+
+
+def test_edit_unknown_site_rejected(files):
+    errors = site_admin.validate(new_site(site_id="ZZ9"), CONTROLS, False, files["sites_file"])
+    assert any("cannot be edited" in e for e in errors)
+
+
+def test_generated_swppp_parses_and_checklist_has_items(files):
+    text = site_admin.build_swppp(new_site(), CONTROLS, {"project_description": "Location: Tacoma, WA"})
+    site_admin.save_site(new_site(), CONTROLS, text, True, now=NOW, **files)
+    sections = swppp.load_sections("T04")
+    assert [(s["number"], s["control_id"]) for s in sections] == [
+        ("1.1", ""), ("2.1", ""), ("4.1", "SF-9"), ("4.2", "IP-9")]
+    assert sections[2]["title"] == "Silt Fence SF-9"
+    assert "Inspect: undercutting, tears, sediment depth" in sections[2]["lines"]
+    rows = swppp.checklist("T04", ["SF-9", "IP-9"])
+    items = [r["item"] for r in rows if r["control_id"] == "SF-9"]
+    assert "Silt Fence SF-9: tears" in items and len(items) == 4     # 3 inspect items + maintenance trigger
+    assert any(r["control_id"] == "IP-9" for r in rows)
+    assert swppp.threshold_conflicts("T04") == []
+    # round trip: what the tab prefills in edit mode equals what was saved
+    assert site_admin.controls_from_sections(sections) == CONTROLS
+    assert site_admin.text_sections_from(sections)["project_description"] == ["Location: Tacoma, WA"]
+
+
+def test_generated_matches_t01_format(files):
+    """Rebuilding T01 from its own sections gives the same headings and bullets as T01.md."""
+    sections = swppp.load_sections("T01")
+    columns, rows = site_admin.read_sites(files["sites_file"])
+    t01 = next(r for r in rows if r["site_id"] == "T01")
+    text = site_admin.build_swppp(t01, site_admin.controls_from_sections(sections),
+                                  site_admin.text_sections_from(sections))
+    assert site_admin.parse_sections(text) == sections
+
+
+def test_uploaded_md_used_and_threshold_warning(files):
+    md = ("# SWPPP: SAMPLE Upload Site (T05)\n\n"
+          "## 2.1 Inspection Schedule\n- Inspect within 24 hours of a 0.5 in storm\n\n"
+          "## 4.1 Wattle WT-1\n- Location: slope\n- Inspect: gaps, sediment\n\n"
+          "## 4.2 Check Dam CD-2\n- Inspect: overtopping\n")
+    controls = site_admin.controls_from_sections(site_admin.parse_sections(md))
+    assert [c["control_id"] for c in controls] == ["WT-1", "CD-2"]
+    assert controls[0]["name"] == "Wattle"
+    assert site_admin.threshold_conflicts_text(md) and "0.5 in" in site_admin.threshold_conflicts_text(md)[0]
+    errors, _ = site_admin.save_site(new_site(site_id="T05"), controls, md, True, now=NOW, **files)
+    assert errors == []
+    assert (files["swppp_dir"] / "T05.md").read_text(encoding="utf-8") == md
+    _, rows = site_admin.read_sites(files["sites_file"])
+    assert rows[-1]["control_ids"] == "WT-1;CD-2"
+    assert len(swppp.checklist("T05", ["WT-1", "CD-2"])) == 2 + 3

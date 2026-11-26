@@ -41,8 +41,20 @@ closing it stops the app.
 | **Site Checklist** | Pick a site for a SWPPP-cited inspection checklist and its open deficiencies |
 | **Draft Report** | Enter findings, click **Draft report**. Python sets every deadline; the local AI writes the wording; download the draft |
 | **Verification** | Click **Run test suite** to see pass rates by category |
+| **Add / Edit Site** | Add a site or edit one (see below) |
 
 The agent never marks inspections complete, signs reports, or edits inspection records.
+
+### Add / Edit Site tab
+
+1. Pick **New site**, or an existing site ID to load its current values (the site ID can't be changed).
+2. Fill in the site details, the control measures table (one row per control, e.g. `SF-1`; Inspect items
+   comma-separated), and any optional SWPPP sections (one bullet per line). Or upload a finished SWPPP `.md`.
+3. Check the preview: the `sites.csv` row, the SWPPP text, the controls found, and any problems.
+4. Click **Save site**. Nothing is saved if anything is wrong. Both files are first copied to `data/backups/`.
+5. Click **Refresh rainfall** on Storm Triage to assign the new site a weather station.
+
+Plain Python, no AI. It writes only `data/sites.csv` and `data/swppps/<site_id>.md`.
 
 ## 5. Test
 

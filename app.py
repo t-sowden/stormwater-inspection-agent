@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from agent import corrective, drafter, records, report_rules, swppp, validator
+from agent import corrective, drafter, records, report_rules, site_admin, swppp, validator
 from agent import verify as verifier
 from agent.rainfall import load_cache, rain_for_station, storm_trigger
 from agent.scheduler import site_schedule, storm_triggers
@@ -111,6 +111,7 @@ def refresh_rainfall(sites):
 
 # ---------- Triage table (reads saved data only) ----------
 PRIORITY_ORDER = {"OVERDUE": 0, "STORM INSPECTION": 1, "CHECK DATA": 2, "Routine": 3}
+NO_INSPECTION_DUE = "First inspection needed"
 
 
 def scheduler_trigger(site_d, hourly):
@@ -142,6 +143,17 @@ def build_triage(sites, site_stations, now=None):
         site_d["last_inspection"] = records.last_inspection(sid, site_d.get("last_inspection", ""))
         trigger = scheduler_trigger(site_d, hourly)
         fixes = corrective.open_items(site_d, records.deficiencies(sid), now)
+        if not str(site_d["last_inspection"]).strip():
+            # No inspection in the log or sites.csv: nothing to count from, so no due dates yet.
+            flags = sorted(set(data_flags + ["NO_INSPECTION_LOGGED"] + [f for fx in fixes for f in fx["flags"]]))
+            rows.append({
+                "Priority": "OVERDUE" if "OVERDUE" in flags else "CHECK DATA", "Site": sid,
+                "Name": site["name"], "Next due": NO_INSPECTION_DUE, "Due for": "Initial inspection",
+                "Rule": "", "Station": st_row["station_id"], "Distance (mi)": st_row["distance_mi"],
+                "Max 24-h rain (in)": round(max_24h, 2), "0.25 in reached (since last insp.)": "",
+                "Also due": "", "Open fixes": len(fixes), "Flags": ", ".join(flags), "_due": now,
+            })
+            continue
         try:
             items = site_schedule(site_d, hourly, now)
         except Exception as e:
@@ -340,8 +352,8 @@ st.title("Construction Stormwater Inspection Agent")
 st.caption("DRAFT tool. Inspector review required. The agent never completes, "
            "signs, or edits inspection records.")
 
-triage, checklist, report, verify = st.tabs(
-    ["Storm Triage", "Site Checklist", "Draft Report", "Verification"])
+triage, checklist, report, verify, admin = st.tabs(
+    ["Storm Triage", "Site Checklist", "Draft Report", "Verification", "Add / Edit Site"])
 
 with triage:
     left, right = st.columns([1, 3])
@@ -402,7 +414,10 @@ with checklist:
     c1, c2, c3 = st.columns(3)
     c1.metric("Last inspection", ctx["site"]["last_inspection"] or "none logged")
     nxt = ctx["items"][0] if ctx["items"] else None
-    c2.metric("Next due", local_time(nxt["due"]) if nxt else "n/a", nxt["kind"] if nxt else None)
+    if ctx["site"]["last_inspection"]:
+        c2.metric("Next due", local_time(nxt["due"]) if nxt else "n/a", nxt["kind"] if nxt else None)
+    else:
+        c2.metric("Next due", NO_INSPECTION_DUE, "Initial inspection", delta_color="off")
     c3.metric("Open fixes", len(ctx["fixes"]))
     if ctx["fixes"]:
         st.subheader("Open deficiencies (read-only log)")
@@ -422,6 +437,9 @@ with report:
     sid = st.selectbox("Site", site_ids, format_func=site_label.get, key="rp_site")
     ctx = site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved, AS_OF)
     sections = swppp.sections_for(sid, ctx["controls"])
+    if not ctx["site"]["last_inspection"]:
+        st.info(f"{NO_INSPECTION_DUE}: no inspection is logged for this site, so no storm or routine "
+                "due dates are used in this report.")
     with st.form(f"findings_{sid}"):
         st.subheader("Inspection findings (entered by the inspector)")
         a, b, c = st.columns(3)
@@ -509,3 +527,132 @@ with verify:
         if failed and st.button(f"Save {failed} failure(s) to data/failure_register.csv"):
             verifier.save_failures(res)
             st.success("Saved. Fill in the cause and fix columns.")
+
+with admin:
+    st.caption("Add a site or edit one: writes data/sites.csv and data/swppps/<site_id>.md. "
+               "Both files are backed up to data/backups/ first. Plain Python, no AI.")
+    if "sa_pick_next" in st.session_state:
+        st.session_state["sa_pick"] = st.session_state.pop("sa_pick_next")
+    saved = st.session_state.pop("sa_saved", None)
+    if saved:
+        st.success(f"Saved site {saved['site_id']}. Backups: {', '.join(saved['backups']) or 'none (new files)'}.")
+        st.info("Click Refresh rainfall on Storm Triage to assign a weather station.")
+
+    sa_columns, sa_rows = site_admin.read_sites()
+    sa_by_id = {r["site_id"]: r for r in sa_rows}
+    pick = st.selectbox("Site", ["New site"] + list(sa_by_id), key="sa_pick",
+                        format_func=lambda x: x if x == "New site" else f"{x}  {sa_by_id[x].get('name', '')}")
+    is_new = pick == "New site"
+    base = site_admin.new_site_defaults(sa_columns) if is_new else dict(sa_by_id[pick])
+    sections = [] if is_new else swppp.load_sections(pick)
+    k = f"sa_{pick}_{st.session_state.get('sa_ver', 0)}_"   # new keys per site and per save -> fresh values
+
+    def yes_no(col, label, field):
+        return col.selectbox(label, ["yes", "no"], index=0 if base.get(field, "").lower() == "yes" else 1,
+                             key=k + field)
+
+    def coord(col, label, field):
+        try:
+            current = float(base.get(field, ""))
+        except ValueError:
+            current = None
+        value = col.number_input(label, value=current, format="%.4f", step=0.0001, key=k + field)
+        if value is None:
+            return ""
+        return base[field] if current is not None and value == current else f"{value:.4f}"
+
+    st.subheader("1. Site details")
+    site = dict(base)
+    a, b, c = st.columns(3)
+    site["site_id"] = a.text_input("Site ID", base.get("site_id", ""), key=k + "site_id", disabled=not is_new,
+                                   help="Letters, digits, and hyphens. Cannot be changed after saving.")
+    site["name"] = b.text_input("Name", base.get("name", ""), key=k + "name")
+    site["active"] = yes_no(c, "Active", "active")
+    site["lat"] = coord(a, "Latitude", "lat")
+    site["lon"] = coord(b, "Longitude", "lon")
+    site["frequency_option"] = c.selectbox(
+        "Frequency option", ["A", "B"], index=0 if base.get("frequency_option", "B").upper() == "A" else 1,
+        key=k + "frequency_option", help="A: every 7 days. B: every 14 days plus storm inspections.")
+    site["impaired_water"] = yes_no(a, "Impaired receiving water", "impaired_water")
+    site["has_manual_gauge"] = yes_no(b, "Has manual rain gauge", "has_manual_gauge")
+    site["works_holidays"] = yes_no(c, "Works federal holidays", "works_holidays")
+    site["work_days"] = a.text_input("Work days", base.get("work_days", ""), key=k + "work_days",
+                                     help="e.g. Mon-Fri or Mon,Tue,Sat")
+    site["work_start"] = b.text_input("Work start (HH:MM)", base.get("work_start", ""), key=k + "work_start")
+    site["work_end"] = c.text_input("Work end (HH:MM)", base.get("work_end", ""), key=k + "work_end")
+    site["last_inspection"] = a.text_input("Last inspection (fallback)", base.get("last_inspection", ""),
+                                           key=k + "last_inspection",
+                                           help="YYYY-MM-DD HH:MM, or blank. The inspection log overrides it.")
+    extra_cols = [col for col in sa_columns if col not in site_admin.SITE_COLUMNS]
+    for i, col in enumerate(extra_cols):
+        site[col] = [a, b, c][i % 3].text_input(col, base.get(col, ""), key=k + "x_" + col)
+
+    st.subheader("2. Control measures")
+    st.caption("One row per control. Control IDs look like SF-1. Inspect = comma-separated items; "
+               "each becomes a checklist line. control_ids in sites.csv is built from this table.")
+    if sections:
+        init = site_admin.controls_from_sections(sections)
+    else:
+        init = [{"control_id": cid} for cid in base.get("control_ids", "").split(";") if cid]
+    controls_df = pd.DataFrame(init, columns=site_admin.CONTROL_FIELDS).fillna("").astype(str)
+    edited = st.data_editor(
+        controls_df, num_rows="dynamic", hide_index=True, width="stretch", key=k + "controls",
+        column_config={
+            "control_id": st.column_config.TextColumn("Control ID"),
+            "name": st.column_config.TextColumn("Name"),
+            "location": st.column_config.TextColumn("Location"),
+            "inspect": st.column_config.TextColumn("Inspect (comma-separated)"),
+            "maintenance_trigger": st.column_config.TextColumn("Maintenance trigger"),
+            "response": st.column_config.TextColumn("Response"),
+        })
+    controls = site_admin.clean_controls(edited.to_dict("records"))
+
+    st.subheader("3. Other SWPPP sections (optional)")
+    st.caption("One bullet per line. A blank inspection schedule is filled in from the frequency option.")
+    texts = site_admin.text_sections_from(sections)
+    text_in = {}
+    t1, t2 = st.columns(2)
+    for i, (key, (num, heading)) in enumerate(site_admin.TEXT_SECTIONS.items()):
+        text_in[key] = (t1 if i % 2 == 0 else t2).text_area(
+            f"{num} {heading}", "\n".join(texts[key]), height=110, key=k + key)
+
+    upload = st.file_uploader("Or upload a finished SWPPP (.md) to use instead of the generated one",
+                              type=["md"], key=k + "upload")
+    if upload is not None:
+        swppp_text = upload.getvalue().decode("utf-8-sig")
+        controls = site_admin.controls_from_sections(site_admin.parse_sections(swppp_text))
+        st.info("Using the uploaded file. The control table and text boxes above are ignored; "
+                "control IDs come from its headings.")
+    else:
+        swppp_text = site_admin.build_swppp(site, controls, text_in)
+
+    st.subheader("4. Preview")
+    st.caption("sites.csv row")
+    st.dataframe(pd.DataFrame([site_admin.site_row(site, controls, sa_columns)]), hide_index=True,
+                 width="stretch")
+    st.caption(f"data/swppps/{site['site_id'] or '<site_id>'}.md")
+    st.code(swppp_text, language="markdown")
+
+    st.markdown("**Checks**")
+    found = [s for s in site_admin.parse_sections(swppp_text) if s["control_id"]]
+    if found:
+        st.success("Controls found in the SWPPP: " + ", ".join(f"§{s['number']} {s['control_id']}" for s in found))
+    else:
+        st.error("No control headings found. Use the format `## 4.1 Silt Fence SF-1`.")
+    for p in site_admin.control_id_problems(controls):
+        st.error(p)
+    for w in site_admin.threshold_conflicts_text(swppp_text):
+        st.warning(w)
+
+    if st.button("Save site", type="primary", key=k + "save"):
+        errors, backups = site_admin.save_site(site, controls, swppp_text, is_new)
+        if errors:
+            st.error("Nothing was saved. Fix these first:")
+            for e in errors:
+                st.error(e)
+        else:
+            st.session_state["sa_saved"] = {"site_id": site["site_id"].strip(),
+                                            "backups": [p.name for p in backups]}
+            st.session_state["sa_pick_next"] = site["site_id"].strip()
+            st.session_state["sa_ver"] = st.session_state.get("sa_ver", 0) + 1
+            st.rerun()

@@ -81,7 +81,8 @@ DATA_LATE, OVERDUE, and due dates are then computed as of the last refresh time.
 
 | Message | Fix |
 | --- | --- |
-| `uv is not installed` / `'uv' is not recognized` | Install uv (step 2), then reopen the terminal |
+| `uv is not installed` / `'uv' is not recognized` after installation | Reopen PowerShell, or run `$env:Path = "$env:USERPROFILE\.local\bin;$env:Path"`, then run the launcher again. |
+| `Failed to spawn: streamlit` / `Application Control policy has blocked this file (os error 4551)` | Wait a few seconds, then rerun `.\start.bat`. If the error persists, contact your IT administrator. Reinstallation is generally unnecessary. |
 | `Ollama is not running` | Open the Ollama app, then run the launcher again |
 | `invalid peer certificate` / `SSLError` | Your network inspects HTTPS. In PowerShell: `setx UV_SYSTEM_CERTS 1`, reopen the terminal |
 | `start.bat` won't run by double-click | Open a terminal in the project folder and run `.\start.bat` |

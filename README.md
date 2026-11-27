@@ -38,23 +38,53 @@ closing it stops the app.
 | Tab | What it does |
 | --- | --- |
 | **Storm Triage** | Click **Refresh rainfall**. Shows each site's next due inspection, station and distance, open fixes, and flags |
-| **Site Checklist** | Pick a site for a SWPPP-cited inspection checklist and its open deficiencies |
+| **Site Records** | Pick a site for its last inspection, next due date, open deficiencies, and a SWPPP-cited checklist. Below that, view and edit the inspector records (see below) |
 | **Draft Report** | Enter findings, click **Draft report**. Python sets every deadline; the local AI writes the wording; download the draft |
 | **Verification** | Click **Run test suite** to see pass rates by category |
-| **Add / Edit Site** | Add a site or edit one (see below) |
+| **Add Site** | Add a new site and its SWPPP (see below) |
 
-The agent never marks inspections complete, signs reports, or edits inspection records.
+The agent (and its AI) never marks inspections complete, signs reports, or changes inspection records on its own.
+Records change only when an inspector clicks Save on **Site Records** or **Add Site**. Checklist tick boxes
+are a field aid only and are never saved.
 
-### Add / Edit Site tab
+### Site Records tab: editing the inspector records
 
-1. Pick **New site**, or an existing site ID to load its current values (the site ID can't be changed).
-2. Fill in the site details, the control measures table (one row per control, e.g. `SF-1`; Inspect items
-   comma-separated), and any optional SWPPP sections (one bullet per line). Or upload a finished SWPPP `.md`.
-3. Check the preview: the `sites.csv` row, the SWPPP text, the controls found, and any problems.
-4. Click **Save site**. Nothing is saved if anything is wrong. Both files are first copied to `data/backups/`.
-5. Click **Refresh rainfall** on Storm Triage to assign the new site a weather station.
+Below the checklist, **Inspector records (INSPECTOR_RECORDS.xlsx)** has three collapsed sections, **Sites**,
+**Inspections**, and **Deficiencies**. Each one shows the whole sheet with the same columns as in Excel.
+Dates use a date picker, and fixed choices (A/B, yes/no, routine/storm, category, status, site ID) are dropdowns.
 
-Plain Python, no AI. It writes only `data/sites.csv` and `data/swppps/<site_id>.md`.
+- **Log an inspection:** open **Inspections** and add a row with **+** below the table. Pick the site, then
+  enter inspected_at, type, and inspector. Leave inspection_id blank; it gets the next `I-###`. Due dates on
+  Storm Triage then count from this inspection.
+- **Close a deficiency:** open **Deficiencies**, find the row, set status to **closed**, and enter closed_at
+  (when the fix was finished). It then drops out of the open fixes. Log a new deficiency the same way as an
+  inspection; it gets the next `D-###`.
+- **Edit a site:** open **Sites** and change the cells. site_id can't be changed. To retire a site, set
+  active to **no**. New sites are added on the **Add Site** tab.
+- **Save:** type your name in **Saved by**. Tick **Show changes** to review the added rows and changed cells
+  (old -> new), then click **Save sites** / **Save inspections** / **Save deficiencies**.
+  - Each Save writes only that sheet and stamps each changed or added row with updated_by and updated_at.
+  - Storm Triage and the metrics update immediately.
+- **Rows can't be deleted.** A save that would remove a row is refused; correct the values instead.
+- **Before every save, the whole workbook is copied** to `data/backups/INSPECTOR_RECORDS_<date>_<time>.xlsx`.
+  To undo a save, copy a backup back over `data/INSPECTOR_RECORDS.xlsx`.
+- **Close `INSPECTOR_RECORDS.xlsx` in Excel before saving.** If it's open, nothing is saved and you're asked
+  to close it.
+- **Nothing is saved if anything is wrong.** Every problem is listed in plain English, for example: a time in
+  the future, a closed deficiency with no closed_at, or a control that isn't one of the site's controls.
+
+### Add Site tab
+
+1. Fill in the site details (the site ID must be new), the control measures table (one row per control, e.g.
+   `SF-1`; Inspect items comma-separated), and any optional SWPPP sections (one bullet per line). Or upload a
+   finished SWPPP `.md`.
+2. Check the preview: the row for the `sites` sheet, the SWPPP text, the controls found, and any problems.
+3. **Close `INSPECTOR_RECORDS.xlsx` in Excel**, then click **Save site**. Nothing is saved if anything is wrong
+   or the workbook is open. The workbook is first copied to `data/backups/`.
+4. Click **Refresh rainfall** on Storm Triage to assign the new site a weather station.
+
+Plain Python, no AI. It adds one row to the `sites` sheet of `data/INSPECTOR_RECORDS.xlsx` (the other sheets are
+kept as they are) and writes `data/swppps/<site_id>.md`. To change an existing site, use **Site Records**.
 
 ## 5. Test
 
@@ -66,8 +96,18 @@ All tests should pass. The 32 cases are listed in `tests/TEST_CASES.md`.
 
 ## 6. Data files
 
-Site data, SWPPPs, the inspection log, and test cases live in `data/` and `tests/`.
-Files marked **DRAFT** or **SAMPLE** are placeholders. See `data/DRAFT_DATA_README.md` to replace them.
+Sites, the inspection log, and the deficiency list are in **one Excel workbook, `data/INSPECTOR_RECORDS.xlsx`**,
+with three sheets: `sites`, `inspections`, `deficiencies`.
+
+- Edit `INSPECTOR_RECORDS.xlsx` in Excel. Keep the sheet names and the column names in row 1.
+- Dates and times can be real Excel dates/times or text (`2026-11-09 09:00` or `11/9/2026 9:00`).
+- The app can read the workbook while Excel has it open (press F5 after saving in Excel to reload).
+- Close Excel before saving from the **Site Records** or **Add Site** tab.
+- If a sheet or column is missing or renamed, Storm Triage shows an error naming it.
+
+SWPPPs are in `data/swppps/`; test cases are in `tests/`. The old CSVs are kept in `data/legacy_csv/` for
+reference only; the app no longer reads them. Files marked **DRAFT** or **SAMPLE** are placeholders. See
+`data/DRAFT_DATA_README.md` to replace them.
 Settings (station distance, storm threshold, time zone, working hours) are in `config.py`.
 
 ## 7. Offline demo (saved data)
@@ -87,12 +127,15 @@ DATA_LATE, OVERDUE, and due dates are then computed as of the last refresh time.
 | R11 counts repeats by control ID only | The log has no location column, so "same location" and "same fix" are not checked |
 | Validator blocks any word starting with "certif" | Product names such as "certified weed-free straw" are rejected. Kept on purpose: safer |
 | Validator uses word patterns | New phrasings can slip through; failures go to `data/failure_register.csv` |
-| Contractor inspection form | The agent reads `data/inspections.csv` and `data/deficiencies.csv` only; it never writes them |
+| Contractor inspection form | Inspections and deficiencies are logged by an inspector in the Site Records tab (or in Excel). The agent never adds or changes them on its own |
 
 ## 9. Troubleshooting
 
 | Message | Fix |
 | --- | --- |
+| `INSPECTOR_RECORDS.xlsx is open in Excel. Close it and click Save again.` | Close the workbook in Excel, then click Save again. Nothing was saved |
+| `Close INSPECTOR_RECORDS.xlsx in Excel and press F5.` | The workbook couldn't be read (often mid-save in Excel). Close it, then press F5 |
+| `... has no sheet named ...` / `... is missing column(s) ...` | Rename the sheet or row-1 column back to the name shown (see `data/DRAFT_DATA_README.md`) |
 | `uv is not installed` / `'uv' is not recognized` after installation | Reopen PowerShell, or run `$env:Path = "$env:USERPROFILE\.local\bin;$env:Path"`, then run the launcher again. |
 | `Failed to spawn: streamlit` / `Application Control policy has blocked this file (os error 4551)` | Wait a few seconds, then rerun `.\start.bat`. If the error persists, contact your IT administrator. Reinstallation is generally unnecessary. |
 | `Ollama is not running` | Open the Ollama app, then run the launcher again |

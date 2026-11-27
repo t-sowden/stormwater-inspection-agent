@@ -1,0 +1,6 @@
+﻿deficiency_id,site_id,inspection_id,control_id,found_at,description,category,status,closed_at
+D-001,T01,I-001,SF-1,11/9/2026 9:30,Sediment at 1/3 fence height along north line (DRAFT),routine_maintenance,closed,11/10/2026 14:00
+D-002,T01,I-002,SF-1,11/16/2026 9:20,Sediment at 1/3 fence height along north line again (DRAFT),routine_maintenance,closed,11/17/2026 11:00
+D-003,T01,I-002,IP-2,11/16/2026 9:40,Filter bag torn at Inlet 3 (DRAFT),corrective_new_control,closed,11/25/2026 9:00
+D-004,T02,I-003,SF-2,11/13/2026 10:20,Silt fence undercut near southeast corner (DRAFT),corrective_no_new_control,closed,11/25/2026 11:00
+D-005,T03,I-005,SF-3,11/17/2026 13:45,Minor sediment buildup at west end (DRAFT),routine_maintenance,closed,11/25/2026 14:00

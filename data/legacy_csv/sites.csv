@@ -1,0 +1,4 @@
+﻿"site_id","name","lat","lon","frequency_option","impaired_water","control_ids","active","last_inspection","work_days","work_start","work_end","works_holidays","has_manual_gauge"
+"T01","SAMPLE Tideflats Logistics Yard","47.269","-122.4125","B","yes","SF-1;IP-2;CB-1","yes","2026-11-25 09:00","Mon-Fri","07:00","17:00","no","yes"
+"T02","SAMPLE South Tacoma Way Apartments","47.214","-122.474","B","no","SF-2;IP-1","yes","2026-11-13 10:00","Mon-Fri","07:00","17:00","no","no"
+"T03","SAMPLE Point Defiance Trailhead Parking","47.303","-122.516","A","no","SF-3","yes","2026-11-17 13:30","Mon-Sat","07:00","15:00","no","yes"

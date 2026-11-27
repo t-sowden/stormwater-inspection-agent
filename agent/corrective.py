@@ -14,6 +14,7 @@ A description mentioning a possible discharge or water-quality issue is flagged 
 """
 from datetime import datetime, timedelta, timezone
 
+from agent.timeparse import parse_local_datetime
 from agent.scheduler import LOCAL, calendar_for, plus_hours
 
 CATEGORIES = {
@@ -27,7 +28,7 @@ ESCALATE_WORDS = ("discharge", "sheen", "turbid", "plume", "leaving the site", "
 
 
 def parse_local(text):
-    return datetime.fromisoformat(text).replace(tzinfo=LOCAL) if text else None
+    return parse_local_datetime(text).replace(tzinfo=LOCAL) if str(text or "").strip() else None
 
 
 def deficiency_deadlines(defect, site, history=(), now=None):

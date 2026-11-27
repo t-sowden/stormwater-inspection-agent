@@ -15,6 +15,7 @@ Corrective-action rules (R9-R14) are added with the Draft Report tab.
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from agent.timeparse import parse_clock, parse_local_datetime
 from config import (DEFAULT_WORK_DAYS, DEFAULT_WORK_END, DEFAULT_WORK_START,
                     INTERPRETATION_CUTOFF_HOURS, SITE_TZ, STORM_THRESHOLD_IN)
 
@@ -75,8 +76,8 @@ class SiteCalendar:
     def __init__(self, work_days=DEFAULT_WORK_DAYS, start=DEFAULT_WORK_START,
                  end=DEFAULT_WORK_END, works_holidays=False):
         self.days = parse_work_days(work_days)
-        self.start = time.fromisoformat(start)
-        self.end = time.fromisoformat(end)
+        self.start = start if isinstance(start, time) else parse_clock(start, "work_start")
+        self.end = end if isinstance(end, time) else parse_clock(end, "work_end")
         self.works_holidays = works_holidays
 
     def is_workday(self, d):
@@ -123,12 +124,18 @@ class SiteCalendar:
 
 
 def calendar_for(site):
-    """Build a SiteCalendar from a sites.csv row (blank cells use the defaults)."""
+    """Build a SiteCalendar from a row of the sites sheet (blank cells use the defaults)."""
     def val(key, default):
         v = site.get(key)
         return default if v is None or str(v).strip() in ("", "nan") else str(v).strip()
-    return SiteCalendar(val("work_days", DEFAULT_WORK_DAYS), val("work_start", DEFAULT_WORK_START),
-                        val("work_end", DEFAULT_WORK_END), val("works_holidays", "no").lower() == "yes")
+    try:
+        return SiteCalendar(val("work_days", DEFAULT_WORK_DAYS), val("work_start", DEFAULT_WORK_START),
+                            val("work_end", DEFAULT_WORK_END), val("works_holidays", "no").lower() == "yes")
+    except ValueError as e:
+        if "work_start" in str(e) or "work_end" in str(e):
+            raise ValueError(f"INSPECTOR_RECORDS.xlsx sheet sites {e}") from None
+        raise ValueError(f"INSPECTOR_RECORDS.xlsx sheet sites work_days: unreadable value '{val('work_days', '')}'. "
+                         "Use e.g. Mon-Fri or Mon,Tue,Sat.") from None
 
 
 # ---------- Deadlines ----------
@@ -229,7 +236,7 @@ def site_schedule(site, hourly, now=None, data_flags=()):
     """
     now = now or datetime.now(timezone.utc)
     cal = calendar_for(site)
-    last = datetime.fromisoformat(str(site["last_inspection"]).strip()).replace(tzinfo=LOCAL)
+    last = parse_local_datetime(site["last_inspection"], "last_inspection").replace(tzinfo=LOCAL)
     option = str(site.get("frequency_option", "B")).strip().upper()
     impaired = str(site.get("impaired_water", "no")).strip().lower() == "yes"
 

@@ -7,13 +7,14 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from agent import corrective, drafter, records, report_rules, site_admin, swppp, validator
+from agent import corrective, drafter, records, report_rules, site_admin, swppp, validator, workbook
 from agent import verify as verifier
 from agent.rainfall import load_cache, rain_for_station, storm_trigger
-from agent.scheduler import site_schedule, storm_triggers
+from agent.scheduler import calendar_for, site_schedule, storm_triggers
 from agent.stations import nearest_station
+from agent.timeparse import parse_clock, parse_local_datetime
 from config import (LAST_REFRESH_FILE, MAX_STATION_MI, OLLAMA_HOST, OLLAMA_MODEL,
-                    SITE_STATIONS_FILE, SITE_TZ, SITES_FILE, STORM_THRESHOLD_IN)
+                    SITE_STATIONS_FILE, SITE_TZ, STORM_THRESHOLD_IN, INSPECTOR_RECORDS)
 from agent.scheduler import LOCAL as SCHED_LOCAL
 
 LOCAL = ZoneInfo(SITE_TZ)
@@ -49,9 +50,10 @@ def local_time(ts):
     return ts.astimezone(LOCAL).strftime("%a %b %d %I:%M %p").replace(" 0", " ")
 
 
-def load_sites():
-    """Active sites from data/sites.csv."""
-    sites = pd.read_csv(SITES_FILE, dtype=str).fillna("")
+def load_sites(path=INSPECTOR_RECORDS):
+    """Active sites from the "sites" sheet of data/INSPECTOR_RECORDS.xlsx (all values text, like the old CSV)."""
+    columns, rows = workbook.read_sheet_rows("sites", path)
+    sites = pd.DataFrame([r for _, r in rows], columns=columns, dtype=str).fillna("")
     sites["lat"] = sites["lat"].astype(float)
     sites["lon"] = sites["lon"].astype(float)
     return sites[sites["active"].str.lower() == "yes"].reset_index(drop=True)
@@ -120,7 +122,7 @@ def scheduler_trigger(site_d, hourly):
     last = str(site_d.get("last_inspection", "")).strip()
     if not last:
         return None
-    triggers = storm_triggers(hourly, datetime.fromisoformat(last).replace(tzinfo=SCHED_LOCAL))
+    triggers = storm_triggers(hourly, records.parse_local_time(last).replace(tzinfo=SCHED_LOCAL))
     return triggers[0][0] if triggers else None
 
 
@@ -140,11 +142,20 @@ def build_triage(sites, site_stations, now=None):
         if isinstance(st_row["station_flags"], str) and st_row["station_flags"]:
             data_flags = data_flags + st_row["station_flags"].split(";")
         site_d = site.to_dict()
-        site_d["last_inspection"] = records.last_inspection(sid, site_d.get("last_inspection", ""))
-        trigger = scheduler_trigger(site_d, hourly)
-        fixes = corrective.open_items(site_d, records.deficiencies(sid), now)
+        try:
+            calendar_for(site_d)            # work_days / work_start / work_end readable?
+            site_d["last_inspection"] = records.last_inspection(sid, site_d.get("last_inspection", ""))
+            trigger = scheduler_trigger(site_d, hourly)
+            fixes = corrective.open_items(site_d, records.deficiencies(sid), now)
+        except ValueError as e:     # e.g. a time Excel rewrote into a format we can't read
+            problems.append(f"{sid}: {e}")
+            rows.append({"Priority": "CHECK DATA", "Site": sid, "Name": site["name"],
+                         "Next due": "Unknown: fix the time named above", "Station": st_row["station_id"],
+                         "Distance (mi)": st_row["distance_mi"], "Max 24-h rain (in)": round(max_24h, 2),
+                         "Flags": ", ".join(sorted(set(data_flags + ["UNREADABLE_TIME"]))), "_due": now})
+            continue
         if not str(site_d["last_inspection"]).strip():
-            # No inspection in the log or sites.csv: nothing to count from, so no due dates yet.
+            # No inspection in the log or the sites sheet: nothing to count from, so no due dates yet.
             flags = sorted(set(data_flags + ["NO_INSPECTION_LOGGED"] + [f for fx in fixes for f in fx["flags"]]))
             rows.append({
                 "Priority": "OVERDUE" if "OVERDUE" in flags else "CHECK DATA", "Site": sid,
@@ -228,6 +239,7 @@ def site_context(site, site_stations, now=None):
     now = now or datetime.now(timezone.utc)
     sid = site["site_id"]
     site_d = site.to_dict()
+    calendar_for(site_d)                    # raise early (named file/field) if work hours are unreadable
     site_d["last_inspection"] = records.last_inspection(sid, site_d.get("last_inspection", ""))
     controls = [c for c in str(site_d.get("control_ids", "")).split(";") if c]
     rain = {"station": "none", "distance_mi": "n/a", "max_24h_in": 0.0, "trigger": "none", "flags": ["NO_STATION_DATA"]}
@@ -314,7 +326,13 @@ def write_narrative(facts, previous=None, instruction=None):
 
 # ---------- Page ----------
 connected, models = ollama_status()
-sites = load_sites()
+workbook_error = None
+try:
+    workbook.check()                    # all three sheets and their required columns
+    sites = load_sites()
+except workbook.WorkbookError as e:     # missing/locked/renamed: show it on the tabs instead of crashing
+    workbook_error = str(e)
+    sites = pd.DataFrame(columns=workbook.SHEETS["sites"], dtype=str)
 
 with st.sidebar:
     st.header("System status")
@@ -349,16 +367,16 @@ with st.sidebar:
                     st.error(f"Ollama test failed - {e.__class__.__name__}: {str(e)[:200]}")
 
 st.title("Construction Stormwater Inspection Agent")
-st.caption("DRAFT tool. Inspector review required. The agent never completes, "
-           "signs, or edits inspection records.")
+st.caption("DRAFT tool. Inspector review required. The agent never completes, signs, or edits inspection "
+           "records on its own; only an inspector's Save on Site Records or Add Site changes them.")
 
-triage, checklist, report, verify, admin = st.tabs(
-    ["Storm Triage", "Site Checklist", "Draft Report", "Verification", "Add / Edit Site"])
+triage, site_records, report, verify, admin = st.tabs(
+    ["Storm Triage", "Site Records", "Draft Report", "Verification", "Add Site"])
 
 with triage:
     left, right = st.columns([1, 3])
     with left:
-        if st.button("Refresh rainfall", type="primary", width="stretch"):
+        if st.button("Refresh rainfall", type="primary", width="stretch", disabled=sites.empty):
             st.session_state["refresh_errors"] = refresh_rainfall(sites)
             st.session_state["refresh_done"] = True
             st.rerun()
@@ -375,7 +393,9 @@ with triage:
             st.success("Rainfall refreshed.")
 
     site_stations = load_site_stations()
-    if site_stations.empty:
+    if workbook_error:
+        st.error(workbook_error)
+    elif site_stations.empty:
         st.info("No rainfall data yet. Click **Refresh rainfall**.")
     else:
         table, problems = build_triage(sites, site_stations, AS_OF)
@@ -390,7 +410,8 @@ with triage:
         st.caption("Due dates come from scheduler.py (CGP rules R1-R7) using each site's working hours "
                    "and federal holidays; R7 shows both the literal deadline and EPA's next-business-day "
                    "intent. Last inspections and open fixes come from the read-only log "
-                   "(data/inspections.csv, data/deficiencies.csv); OVERDUE includes overdue fixes (R10-R14).")
+                   "(INSPECTOR_RECORDS.xlsx sheets inspections and deficiencies); OVERDUE includes overdue "
+                   "fixes (R10-R14).")
 
         map_sites = sites[["lat", "lon"]].assign(color="#1f6f8b", size=60)
         stations = site_stations.dropna(subset=["station_lat"])
@@ -404,9 +425,24 @@ site_ids = list(sites["site_id"])
 site_label = {r["site_id"]: f"{r['site_id']}  {r['name']}" for _, r in sites.iterrows()}
 stations_saved = load_site_stations()
 
-with checklist:
+
+def checked_context(sid):
+    """site_context, or None after showing an st.error if a log time can't be read."""
+    try:
+        return site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved, AS_OF)
+    except ValueError as e:
+        st.error(f"{sid}: {e}")
+        return None
+
+
+def render_checklist():
+    if workbook_error:
+        st.error(workbook_error)
+        return
     sid = st.selectbox("Site", site_ids, format_func=site_label.get, key="ck_site")
-    ctx = site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved, AS_OF)
+    ctx = checked_context(sid)
+    if ctx is None:
+        return
     for w in swppp.threshold_conflicts(sid):
         st.warning(w)
     if not swppp.load_sections(sid):
@@ -433,9 +469,15 @@ with checklist:
                    [f"- [ ] {r['item']} ({r['citation']}){' - ' + r['note'] if r['note'] else ''}" for r in rows])
     st.download_button("Download checklist (.md)", md, file_name=f"checklist_{sid}.md")
 
-with report:
+
+def render_report():
+    if workbook_error:
+        st.error(workbook_error)
+        return
     sid = st.selectbox("Site", site_ids, format_func=site_label.get, key="rp_site")
-    ctx = site_context(sites[sites["site_id"] == sid].iloc[0], stations_saved, AS_OF)
+    ctx = checked_context(sid)
+    if ctx is None:
+        return
     sections = swppp.sections_for(sid, ctx["controls"])
     if not ctx["site"]["last_inspection"]:
         st.info(f"{NO_INSPECTION_DUE}: no inspection is logged for this site, so no storm or routine "
@@ -506,6 +548,136 @@ with report:
                     draft["chat"].append({"role": "assistant", "text": "Narrative revised and validated."})
             st.rerun()
 
+
+# ---------- Site Records: the inspector edits INSPECTOR_RECORDS.xlsx (no AI) ----------
+RECORD_SHEETS = [("sites", "Sites"), ("inspections", "Inspections"), ("deficiencies", "Deficiencies")]
+ROW_KEY = site_admin.ROW_KEY
+
+
+def editor_frame(columns, rows):
+    """Sheet rows (text) -> a typed DataFrame for st.data_editor, plus a hidden Excel row number column."""
+    data = []
+    for n, r in rows:
+        d = {ROW_KEY: n}
+        for c in columns:
+            v = r.get(c, "")
+            try:
+                if c in workbook.DATETIME_COLUMNS:
+                    v = parse_local_datetime(v) if v else None
+                elif c in workbook.CLOCK_COLUMNS:
+                    v = parse_clock(v) if v else None
+                elif c in ("lat", "lon"):
+                    v = float(v) if v else None
+            except ValueError:
+                v = None                     # unreadable: shown blank, and left as is unless edited
+            d[c] = v
+        data.append(d)
+    df = pd.DataFrame(data, columns=[ROW_KEY] + columns)
+    for c in columns:
+        if c in workbook.DATETIME_COLUMNS:
+            df[c] = pd.to_datetime(df[c])
+        elif c in ("lat", "lon"):
+            df[c] = df[c].astype(float)
+        elif c not in workbook.CLOCK_COLUMNS:
+            df[c] = df[c].astype(object)
+    return df
+
+
+def frame_rows(df, columns):
+    """Editor DataFrame -> row dicts of text (with ROW_KEY) for site_admin."""
+    return [{ROW_KEY: rec.get(ROW_KEY), **{c: site_admin.editor_text(c, rec.get(c)) for c in columns}}
+            for rec in df.to_dict("records")]
+
+
+def record_column_config(sheet, columns, site_ids):
+    """Same columns and header titles as the sheet, with typed cells and dropdowns."""
+    cfg = {ROW_KEY: None}                                    # hidden
+    for c in columns:
+        if c in workbook.DATETIME_COLUMNS:
+            cfg[c] = st.column_config.DatetimeColumn(c, format="YYYY-MM-DD HH:mm")
+        elif c in workbook.CLOCK_COLUMNS:
+            cfg[c] = st.column_config.TimeColumn(c, format="HH:mm")
+        elif c in ("lat", "lon"):
+            cfg[c] = st.column_config.NumberColumn(c)
+        elif c in site_admin.CHOICES:
+            cfg[c] = st.column_config.SelectboxColumn(c, options=site_admin.CHOICES[c])
+        elif c == "site_id" and sheet != "sites":
+            cfg[c] = st.column_config.SelectboxColumn(c, options=site_ids)
+        else:
+            cfg[c] = st.column_config.TextColumn(c)
+    return cfg
+
+
+def render_record_editors():
+    st.subheader("Inspector records (INSPECTOR_RECORDS.xlsx)")
+    st.caption("Edit the workbook here instead of in Excel (close Excel first). Each Save writes only that sheet, "
+               "after backing up the whole workbook to data/backups/. Rows are never deleted. Changed and added "
+               "rows get updated_by / updated_at. Plain Python, no AI.")
+    saved = st.session_state.pop("rec_saved", None)
+    if saved:
+        st.success(saved)
+    try:
+        sheets = {name: workbook.read_sheet_rows(name) for name, _ in RECORD_SHEETS}
+    except workbook.WorkbookError as e:
+        st.error(str(e))
+        return
+    sites_rows = [r for _, r in sheets["sites"][1]]
+    site_ids = [r["site_id"] for r in sites_rows if r.get("site_id")]
+    ver = st.session_state.get("rec_ver", 0)
+
+    for sheet, title in RECORD_SHEETS:
+        columns, rows = sheets[sheet]
+        id_col = site_admin.SHEET_ID[sheet]
+        with st.expander(title, expanded=False):
+            if sheet == "sites":
+                st.caption("Add new sites on the Add Site tab. site_id can't be changed; to retire a site, "
+                           "set active to no.")
+            else:
+                st.caption(f"Add a row with + below the table; {id_col} is filled in automatically (next free "
+                           "number). Existing rows can be corrected but not deleted.")
+            df = editor_frame(columns, rows)
+            edited = st.data_editor(
+                df, key=f"rec_{sheet}_{ver}", hide_index=True, width="stretch",
+                num_rows="fixed" if sheet == "sites" else "dynamic",
+                column_config=record_column_config(sheet, columns, site_ids),
+                disabled=[id_col] + [c for c in site_admin.AUDIT_COLUMNS if c in columns])
+            original, new = frame_rows(df, columns), frame_rows(edited, columns)
+
+            who = st.text_input("Saved by", key=f"rec_by_{sheet}", help="Your name; required to save.")
+            if st.checkbox("Show changes", key=f"rec_show_{sheet}_{ver}"):
+                plan, problems = site_admin.plan_sheet_edits(sheet, original, new, sites_rows)
+                for line in site_admin.describe_plan(plan):
+                    st.write("- " + line)
+                for p in problems:
+                    (st.info if p == site_admin.NO_CHANGES else st.warning)(p)
+            if st.button(f"Save {sheet}", type="primary", key=f"rec_save_{sheet}_{ver}"):
+                errors, backups, plan = site_admin.save_sheet_edits(sheet, original, new, who)
+                if errors:
+                    if errors != [site_admin.NO_CHANGES]:
+                        st.error("Nothing was saved.")
+                    for e in errors:
+                        (st.info if e == site_admin.NO_CHANGES else st.error)(e)
+                else:
+                    st.session_state["rec_saved"] = (
+                        f"Saved {sheet}: {len(plan['added'])} added, {len(plan['changed'])} changed. "
+                        f"Backup: {', '.join(p.name for p in backups)}.")
+                    st.session_state["rec_ver"] = ver + 1
+                    st.rerun()
+
+
+def render_site_records():
+    render_checklist()
+    if not workbook_error:
+        st.divider()
+        render_record_editors()
+
+
+with site_records:
+    render_site_records()
+
+with report:
+    render_report()
+
 with verify:
     st.caption(f"Runs every case in tests/cases.json ({verifier.CASES_FILE.name}) against the Python rules, "
                "the validator, and the revise-chat guardrails. No AI or internet needed.")
@@ -528,24 +700,22 @@ with verify:
             verifier.save_failures(res)
             st.success("Saved. Fill in the cause and fix columns.")
 
-with admin:
-    st.caption("Add a site or edit one: writes data/sites.csv and data/swppps/<site_id>.md. "
-               "Both files are backed up to data/backups/ first. Plain Python, no AI.")
-    if "sa_pick_next" in st.session_state:
-        st.session_state["sa_pick"] = st.session_state.pop("sa_pick_next")
+
+def render_admin():
+    st.caption("Add a NEW site: appends a row to the sites sheet of data/INSPECTOR_RECORDS.xlsx and writes "
+               "data/swppps/<site_id>.md. The workbook is backed up to data/backups/ first. Plain Python, no AI. "
+               "Close the workbook in Excel before saving. To change an existing site, use Site Records.")
+    if workbook_error:
+        st.error(workbook_error)
+        return
     saved = st.session_state.pop("sa_saved", None)
     if saved:
         st.success(f"Saved site {saved['site_id']}. Backups: {', '.join(saved['backups']) or 'none (new files)'}.")
         st.info("Click Refresh rainfall on Storm Triage to assign a weather station.")
 
-    sa_columns, sa_rows = site_admin.read_sites()
-    sa_by_id = {r["site_id"]: r for r in sa_rows}
-    pick = st.selectbox("Site", ["New site"] + list(sa_by_id), key="sa_pick",
-                        format_func=lambda x: x if x == "New site" else f"{x}  {sa_by_id[x].get('name', '')}")
-    is_new = pick == "New site"
-    base = site_admin.new_site_defaults(sa_columns) if is_new else dict(sa_by_id[pick])
-    sections = [] if is_new else swppp.load_sections(pick)
-    k = f"sa_{pick}_{st.session_state.get('sa_ver', 0)}_"   # new keys per site and per save -> fresh values
+    sa_columns, _ = site_admin.read_sites()
+    base = site_admin.new_site_defaults(sa_columns)
+    k = f"sa_new_{st.session_state.get('sa_ver', 0)}_"   # new keys after each save -> a blank form
 
     def yes_no(col, label, field):
         return col.selectbox(label, ["yes", "no"], index=0 if base.get(field, "").lower() == "yes" else 1,
@@ -564,8 +734,8 @@ with admin:
     st.subheader("1. Site details")
     site = dict(base)
     a, b, c = st.columns(3)
-    site["site_id"] = a.text_input("Site ID", base.get("site_id", ""), key=k + "site_id", disabled=not is_new,
-                                   help="Letters, digits, and hyphens. Cannot be changed after saving.")
+    site["site_id"] = a.text_input("Site ID", base.get("site_id", ""), key=k + "site_id",
+                                   help="Letters, digits, and hyphens. Must be new. Cannot be changed after saving.")
     site["name"] = b.text_input("Name", base.get("name", ""), key=k + "name")
     site["active"] = yes_no(c, "Active", "active")
     site["lat"] = coord(a, "Latitude", "lat")
@@ -589,12 +759,8 @@ with admin:
 
     st.subheader("2. Control measures")
     st.caption("One row per control. Control IDs look like SF-1. Inspect = comma-separated items; "
-               "each becomes a checklist line. control_ids in sites.csv is built from this table.")
-    if sections:
-        init = site_admin.controls_from_sections(sections)
-    else:
-        init = [{"control_id": cid} for cid in base.get("control_ids", "").split(";") if cid]
-    controls_df = pd.DataFrame(init, columns=site_admin.CONTROL_FIELDS).fillna("").astype(str)
+               "each becomes a checklist line. control_ids in the sites sheet is built from this table.")
+    controls_df = pd.DataFrame([], columns=site_admin.CONTROL_FIELDS).astype(str)
     edited = st.data_editor(
         controls_df, num_rows="dynamic", hide_index=True, width="stretch", key=k + "controls",
         column_config={
@@ -609,12 +775,10 @@ with admin:
 
     st.subheader("3. Other SWPPP sections (optional)")
     st.caption("One bullet per line. A blank inspection schedule is filled in from the frequency option.")
-    texts = site_admin.text_sections_from(sections)
     text_in = {}
     t1, t2 = st.columns(2)
     for i, (key, (num, heading)) in enumerate(site_admin.TEXT_SECTIONS.items()):
-        text_in[key] = (t1 if i % 2 == 0 else t2).text_area(
-            f"{num} {heading}", "\n".join(texts[key]), height=110, key=k + key)
+        text_in[key] = (t1 if i % 2 == 0 else t2).text_area(f"{num} {heading}", "", height=110, key=k + key)
 
     upload = st.file_uploader("Or upload a finished SWPPP (.md) to use instead of the generated one",
                               type=["md"], key=k + "upload")
@@ -627,7 +791,7 @@ with admin:
         swppp_text = site_admin.build_swppp(site, controls, text_in)
 
     st.subheader("4. Preview")
-    st.caption("sites.csv row")
+    st.caption("Row for the sites sheet of INSPECTOR_RECORDS.xlsx")
     st.dataframe(pd.DataFrame([site_admin.site_row(site, controls, sa_columns)]), hide_index=True,
                  width="stretch")
     st.caption(f"data/swppps/{site['site_id'] or '<site_id>'}.md")
@@ -645,14 +809,17 @@ with admin:
         st.warning(w)
 
     if st.button("Save site", type="primary", key=k + "save"):
-        errors, backups = site_admin.save_site(site, controls, swppp_text, is_new)
+        errors, backups = site_admin.save_site(site, controls, swppp_text)
         if errors:
-            st.error("Nothing was saved. Fix these first:")
+            st.error("Nothing was saved.")
             for e in errors:
                 st.error(e)
         else:
             st.session_state["sa_saved"] = {"site_id": site["site_id"].strip(),
                                             "backups": [p.name for p in backups]}
-            st.session_state["sa_pick_next"] = site["site_id"].strip()
             st.session_state["sa_ver"] = st.session_state.get("sa_ver", 0) + 1
             st.rerun()
+
+
+with admin:
+    render_admin()

@@ -13,7 +13,7 @@ Times are site-local. Enter them as real Excel dates/times or as text like `2026
 | Sheet | What it is | Columns (same as the old CSVs) |
 | --- | --- | --- |
 | `sites` | Site register | site_id, name, lat, lon, frequency_option (A/B), impaired_water (yes/no), control_ids (`;`-separated), active (yes/no), last_inspection (fallback), work_days (e.g. Mon-Fri), work_start, work_end (HH:MM), works_holidays (yes/no), has_manual_gauge (yes/no; CHECK_GAUGE only fires for "yes") |
-| `inspections` | Contractor inspection log | inspection_id, site_id, inspected_at, type (routine/storm), inspector |
+| `inspections` | Inspection log | inspection_id, site_id, inspected_at, type (routine/storm), inspector |
 | `deficiencies` | Deficiencies found | deficiency_id, site_id, inspection_id, control_id, found_at, description, category, status (open/closed), closed_at. category = routine_maintenance, corrective_no_new_control, or corrective_new_control |
 
 The first nine `sites` columns and every `inspections`/`deficiencies` column are required; if one is missing or
@@ -30,6 +30,9 @@ existing workbook unless you add `--force`).
 | `tests/cases.json` | Test suite for the Verification tab | Each case: id, label (typical/hard/adversarial), type, rule, description, inputs, expected. Copy an existing case of the same type and edit it. Write expected answers from the permit before running |
 
 ## Changing records from the app (no AI)
+
+The AI only drafts wording. It never marks inspections complete, signs reports, or changes inspection records.
+Records change only when an inspector enters data manually and clicks Save on the Site Records or Add Site tab.
 
 - **Site Records tab:** the Sites, Inspections, and Deficiencies sections show each full sheet.
   - **Log an inspection:** add a row in Inspections; inspection_id gets the next `I-###`.

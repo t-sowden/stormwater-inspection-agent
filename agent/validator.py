@@ -53,7 +53,7 @@ def check(narrative, allowed_sections):
     for pattern, what in CLAIMS:
         m = re.search(pattern, text, re.I)
         if m:
-            problems.append(f"Text {what} (\"{m.group(0)}\"). Only the inspector does that.")
+            problems.append(f"Text {what} (\"{m.group(0)}\"). Only an inspector can do that.")
     for m in CITATION.finditer(text):
         num = m.group(1) or m.group(2) or m.group(3)
         if num not in allowed_sections:
@@ -81,6 +81,7 @@ def check_request(instruction):
     text = (instruction or "").lower()
     for pattern, what in REFUSE:
         if re.search(pattern, text):
-            return False, (f"I can't {what}. Dates come from the scheduler, records are read-only, "
-                           f"and only the inspector reviews, signs, and files the report.")
+            return False, (f"I can't {what}. Dates come from the scheduler, and only an inspector can complete, "
+                           "sign, or change records by entering data manually and clicking Save on Site Records "
+                           "or Add Site.")
     return True, ""

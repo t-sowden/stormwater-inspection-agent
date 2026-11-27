@@ -12,6 +12,7 @@ from agent import verify as verifier
 from agent.rainfall import load_cache, rain_for_station, storm_trigger
 from agent.scheduler import calendar_for, site_schedule, storm_triggers
 from agent.stations import nearest_station
+from agent.messages import AI_ROLE, AI_ROLE_SHORT, SAVE_NOTE
 from agent.timeparse import parse_clock, parse_local_datetime
 from config import (LAST_REFRESH_FILE, MAX_STATION_MI, OLLAMA_HOST, OLLAMA_MODEL,
                     SITE_STATIONS_FILE, SITE_TZ, STORM_THRESHOLD_IN, INSPECTOR_RECORDS)
@@ -367,8 +368,7 @@ with st.sidebar:
                     st.error(f"Ollama test failed - {e.__class__.__name__}: {str(e)[:200]}")
 
 st.title("Construction Stormwater Inspection Agent")
-st.caption("DRAFT tool. Inspector review required. The agent never completes, signs, or edits inspection "
-           "records on its own; only an inspector's Save on Site Records or Add Site changes them.")
+st.caption(f"DRAFT tool. Inspector review required. {AI_ROLE_SHORT}")
 
 triage, site_records, report, verify, admin = st.tabs(
     ["Storm Triage", "Site Records", "Draft Report", "Verification", "Add Site"])
@@ -409,7 +409,7 @@ with triage:
                      })
         st.caption("Due dates come from scheduler.py (CGP rules R1-R7) using each site's working hours "
                    "and federal holidays; R7 shows both the literal deadline and EPA's next-business-day "
-                   "intent. Last inspections and open fixes come from the read-only log "
+                   "intent. Last inspections and open fixes come from the inspector records "
                    "(INSPECTOR_RECORDS.xlsx sheets inspections and deficiencies); OVERDUE includes overdue "
                    "fixes (R10-R14).")
 
@@ -456,7 +456,7 @@ def render_checklist():
         c2.metric("Next due", NO_INSPECTION_DUE, "Initial inspection", delta_color="off")
     c3.metric("Open fixes", len(ctx["fixes"]))
     if ctx["fixes"]:
-        st.subheader("Open deficiencies (read-only log)")
+        st.subheader("Open deficiencies (from INSPECTOR_RECORDS.xlsx)")
         st.dataframe(fixes_table(ctx["fixes"]), hide_index=True, width="stretch")
     rows = swppp.checklist(sid, ctx["controls"], [f["control_id"] for f in ctx["fixes"]])
     st.subheader("Inspection checklist")
@@ -471,6 +471,7 @@ def render_checklist():
 
 
 def render_report():
+    st.caption(AI_ROLE + " This tab never writes files; download the draft to keep it.")
     if workbook_error:
         st.error(workbook_error)
         return
@@ -522,12 +523,18 @@ def render_report():
                     st.write("- " + p)
         report_md = drafter.assemble_report(draft["facts"], draft["narrative"], draft["source"])
         st.markdown(report_md)
-        st.download_button("Download draft report (.md)", report_md,
-                           file_name=f"DRAFT_report_{sid}_{datetime.now(LOCAL):%Y%m%d_%H%M}.md")
+        stamp = f"{datetime.now(LOCAL):%Y%m%d_%H%M}"                 # site-local time
+        d1, d2 = st.columns(2)
+        d1.download_button("Download draft report (.md)", report_md, file_name=f"DRAFT_report_{sid}_{stamp}.md")
+        # Built from the same facts and the CURRENT narrative (after any revise-chat edits), not from the markdown.
+        d2.download_button("Download draft report (Word)",
+                           drafter.assemble_report_docx(draft["facts"], draft["narrative"], draft["source"]),
+                           file_name=f"DRAFT_report_{sid}_{stamp}.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
         st.subheader("Revise the narrative")
-        st.caption("Ask the local AI to reword the narrative. Dates, deadlines, and flags stay fixed; "
-                   "requests to change dates, mark complete, sign, or declare compliance are refused.")
+        st.caption("Ask the local AI to reword the narrative. Dates, deadlines, and flags stay fixed. "
+                   "Requests to change dates, mark complete, sign, or declare compliance are refused. " + AI_ROLE)
         for m in draft["chat"]:
             with st.chat_message(m["role"]):
                 st.write(m["text"])
@@ -610,9 +617,10 @@ def record_column_config(sheet, columns, site_ids):
 
 def render_record_editors():
     st.subheader("Inspector records (INSPECTOR_RECORDS.xlsx)")
-    st.caption("Edit the workbook here instead of in Excel (close Excel first). Each Save writes only that sheet, "
-               "after backing up the whole workbook to data/backups/. Rows are never deleted. Changed and added "
-               "rows get updated_by / updated_at. Plain Python, no AI.")
+    st.caption(AI_ROLE)
+    st.caption("Enter data here instead of in Excel, and close Excel first. Each Save writes only that sheet, after "
+               "the whole workbook is backed up to data/backups/. Rows are never deleted. Changed and added rows get "
+               "updated_by and updated_at. Plain Python, no AI.")
     saved = st.session_state.pop("rec_saved", None)
     if saved:
         st.success(saved)
@@ -644,6 +652,7 @@ def render_record_editors():
             original, new = frame_rows(df, columns), frame_rows(edited, columns)
 
             who = st.text_input("Saved by", key=f"rec_by_{sheet}", help="Your name; required to save.")
+            st.caption(SAVE_NOTE)
             if st.checkbox("Show changes", key=f"rec_show_{sheet}_{ver}"):
                 plan, problems = site_admin.plan_sheet_edits(sheet, original, new, sites_rows)
                 for line in site_admin.describe_plan(plan):
@@ -808,6 +817,8 @@ def render_admin():
     for w in site_admin.threshold_conflicts_text(swppp_text):
         st.warning(w)
 
+    st.caption(f"{AI_ROLE_SHORT} Saving adds this new site to INSPECTOR_RECORDS.xlsx and writes its SWPPP; "
+               "a backup is made first.")
     if st.button("Save site", type="primary", key=k + "save"):
         errors, backups = site_admin.save_site(site, controls, swppp_text)
         if errors:

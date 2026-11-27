@@ -1,4 +1,5 @@
-"""Read data/INSPECTOR_RECORDS.xlsx (sheets "sites", "inspections", "deficiencies"). READ-ONLY.
+"""Read data/INSPECTOR_RECORDS.xlsx (sheets "sites", "inspections", "deficiencies"). This module only reads;
+inspector saves (Site Records, Add Site) go through agent/site_admin.py.
 
 Every value comes back as a string, the same as the old CSVs:
   datetimes "YYYY-MM-DD HH:MM", clock times "HH:MM", blanks "", numbers as plain text (47.269, not 47.269000000001).

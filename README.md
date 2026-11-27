@@ -4,6 +4,16 @@ CIVE 580C8, Remote Team D. A free, local dashboard that tracks rainfall, compute
 inspection and corrective-action deadlines, and drafts inspection reports for the inspector to review.
 Everything runs on your own computer. The only internet use is the **Refresh rainfall** button (NOAA).
 
+## How records change
+
+The AI only drafts wording. It never marks inspections complete, signs reports, or changes inspection records.
+Records change only when an inspector enters data manually and clicks Save on the Site Records or Add Site tab.
+
+- **Site Records:** log inspections, close deficiencies, and edit sites.
+- **Add Site:** add new sites and their SWPPPs.
+- **Every Save** requires the inspector's name and first makes a backup of `INSPECTOR_RECORDS.xlsx`.
+- **Draft Report** never writes files. Download the draft to keep it.
+
 ## 1. Requirements
 
 | Item | Minimum |
@@ -20,9 +30,18 @@ Everything runs on your own computer. The only internet use is the **Refresh rai
    - Mac/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
    - Close and reopen the terminal afterwards.
 3. **Get the project**: on GitHub, click **Code > Download ZIP** and unzip it, or clone it with Git.
-   Put it in a plain folder (not OneDrive/Dropbox), e.g. `C:\Projects\stormwater-inspection-agent`.
+   - Put it inside your user profile, e.g. `C:\Users\<you>\Projects\stormwater-inspection-agent` or a folder
+     in Documents.
+   - Don't put it directly under `C:\` or `C:\Users\`. There, creating the `.venv` folder fails with
+     "Access is denied".
+   - Avoid OneDrive and Dropbox folders.
 
-You do **not** need to install Python separately.
+That's all: just Ollama and uv. You do **not** need to install Python or any packages yourself.
+The first run of `start.bat` (or `start.sh`) installs every Python package automatically, including the one
+for the Word report download. That takes a few extra minutes, once.
+
+**Excel is not needed to run the app.** You can edit `data/INSPECTOR_RECORDS.xlsx` in Excel or in the free
+LibreOffice Calc. Close it in Excel before clicking Save in the app.
 
 ## 3. Run
 
@@ -39,13 +58,12 @@ closing it stops the app.
 | --- | --- |
 | **Storm Triage** | Click **Refresh rainfall**. Shows each site's next due inspection, station and distance, open fixes, and flags |
 | **Site Records** | Pick a site for its last inspection, next due date, open deficiencies, and a SWPPP-cited checklist. Below that, view and edit the inspector records (see below) |
-| **Draft Report** | Enter findings, click **Draft report**. Python sets every deadline; the local AI writes the wording; download the draft |
+| **Draft Report** | Enter findings, click **Draft report**. Python sets every deadline; the local AI writes the wording. Download it as Word (.docx) or .md. These are drafts only: the inspector edits and signs them |
 | **Verification** | Click **Run test suite** to see pass rates by category |
 | **Add Site** | Add a new site and its SWPPP (see below) |
 
-The agent (and its AI) never marks inspections complete, signs reports, or changes inspection records on its own.
-Records change only when an inspector clicks Save on **Site Records** or **Add Site**. Checklist tick boxes
-are a field aid only and are never saved.
+The AI only drafts wording; records change only when an inspector enters data and clicks Save (see
+**How records change** above). Checklist tick boxes are a field aid only and are never saved.
 
 ### Site Records tab: editing the inspector records
 
@@ -127,12 +145,14 @@ DATA_LATE, OVERDUE, and due dates are then computed as of the last refresh time.
 | R11 counts repeats by control ID only | The log has no location column, so "same location" and "same fix" are not checked |
 | Validator blocks any word starting with "certif" | Product names such as "certified weed-free straw" are rejected. Kept on purpose: safer |
 | Validator uses word patterns | New phrasings can slip through; failures go to `data/failure_register.csv` |
-| Contractor inspection form | Inspections and deficiencies are logged by an inspector in the Site Records tab (or in Excel). The agent never adds or changes them on its own |
+| Inspection form | An inspector logs inspections and deficiencies by hand on the Site Records tab (or in Excel). The AI never adds or changes them |
 
 ## 9. Troubleshooting
 
 | Message | Fix |
 | --- | --- |
+| Draft report Word download fails / `No module named 'docx'` | In the project folder run `uv sync`, then restart `start.bat` |
+| `Access is denied` while creating `.venv` | The project is directly under `C:\` or `C:\Users\`. Move it into your user profile (e.g. `C:\Users\<you>\Projects`) and run `start.bat` again |
 | `INSPECTOR_RECORDS.xlsx is open in Excel. Close it and click Save again.` | Close the workbook in Excel, then click Save again. Nothing was saved |
 | `Close INSPECTOR_RECORDS.xlsx in Excel and press F5.` | The workbook couldn't be read (often mid-save in Excel). Close it, then press F5 |
 | `... has no sheet named ...` / `... is missing column(s) ...` | Rename the sheet or row-1 column back to the name shown (see `data/DRAFT_DATA_README.md`) |

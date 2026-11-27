@@ -219,7 +219,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Add / Edit Site backups
+# Backups made before each Save (Site Records, Add Site)
 data/backups/
 
 # Excel lock files (created while a workbook is open)

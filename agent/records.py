@@ -1,4 +1,5 @@
-"""Read the contractor's inspection log and deficiency list. READ-ONLY: this module never writes them.
+"""Read the inspection log and deficiency list. This module only reads them; inspector saves on the
+Site Records tab go through agent/site_admin.py.
 
 Both live in data/INSPECTOR_RECORDS.xlsx (Alex replaces the DRAFT rows; keep the sheet and column names):
   sheet "inspections"   inspection_id, site_id, inspected_at, type, inspector
